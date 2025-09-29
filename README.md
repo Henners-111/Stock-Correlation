@@ -1,51 +1,74 @@
 # Stock Correlation & Stress App
 
-A tiny frontend + FastAPI backend to fetch stock history from Yahoo Finance, compute correlations, and simulate shocks.
+Frontend (static HTML + JS) + FastAPI backend. Fetches Yahoo Finance history, computes correlation/beta/alpha/rolling r, and simulates conditional shocks.
 
-## Prereqs
-- Python 3.10+
-- Node not required (static HTML + JS only)
+## Quick start (local)
+- Requirements: Python 3.10+ (no Node needed)
 
-## Setup (Windows PowerShell)
-
+Option A — simple local run
 ```powershell
-# Create and activate a virtual environment (optional but recommended)
+# 1) Create venv (optional)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Install backend dependencies
+# 2) Install backend deps
 pip install -r backend\requirements.txt
 
-# Run backend API
-python backend\main.py
+# 3) Start backend API
+python backend\main.py    # http://127.0.0.1:8000
+
+# 4) Serve frontend (from project root) in another terminal
+python -m http.server 8080  # http://127.0.0.1:8080
+```
+Open http://127.0.0.1:8080 and click Run. In dev, the frontend calls http://127.0.0.1:8000.
+
+Option B — Docker Compose
+```powershell
+docker compose up -d
+# Frontend: http://127.0.0.1:8080
+# Backend : http://127.0.0.1:8000
 ```
 
-Backend will start at http://127.0.0.1:8000
+## Deploy behind Nginx Proxy Manager + Cloudflare
+- Create two Proxy Hosts in NPM:
+	- stock.nethercot.uk → http://<vm-ip>:8080 (Let’s Encrypt, Force SSL)
+	- api.stock.nethercot.uk → http://<vm-ip>:8000 (Let’s Encrypt, Force SSL)
+- Cloudflare DNS: A records for stock and api to your public IP (proxy ON). If LE fails, temporarily turn proxy OFF to issue certs.
+- Full, step-by-step guide: see `SELF_HOSTING.md`.
 
-## Use the app
-- Open `index.html` directly in your browser.
-- Fill tickers and dates, click Run.
+## Configuration (env)
+- `ALLOW_ORIGINS`: comma-separated CORS origins (e.g., `https://stock.nethercot.uk,https://api.stock.nethercot.uk`).
+- `HOST`/`PORT`: backend bind host/port (default 0.0.0.0:8000).
 
-## Notes
-- CORS is enabled for all origins.
-- Monte Carlo uses a 2D Gaussian with covariance from historical returns.
-- If there is little overlapping data, the app will show an error in the status area.
+## API
+- GET `/` → health JSON.
+- GET `/history?ticker=AAPL&start=2024-01-01&end=2024-03-01`
+	- Returns array of OHLCV with ISO date strings; cleans NaN/inf rows.
 
-## What it does
-- Fits a bivariate normal to historical daily log-returns of the two tickers (means, variances, covariance).
-- You enter a shock to A (%). The app computes B’s conditional distribution given that realized shock:
+## How it works (stats model)
+- Build daily log-returns for both series over the overlapping range.
+- Compute means, variances, covariance, Pearson r, OLS beta/alpha.
+- Conditional shock: for shock to A, model B | A as Normal with:
 	- E[B|A] = μB + Cov(A,B)/Var(A) × shockA
 	- Var[B|A] = Var(B) − Cov(A,B)^2 / Var(A)
-- Reports Expected B (shock) from that conditional mean and runs a Monte Carlo on B|A to show p5/p50/p95 and a histogram.
-- Computes correlation, beta, alpha, covariance, and rolling correlation from the same historical returns.
+- Show Expected B and Monte Carlo histogram/quantiles for B|A.
 
-## What it is not
-- Not a regulatory or firm-wide stress platform (no macro scenarios, factor models, liquidity/contagion, non-linear exposures, or PnL attribution).
-- Assumes Gaussian returns and linear relationships; no fat tails, copulas, regime shifts, or GARCH volatility.
+## Limitations
+- Simplified Gaussian/linear model; no fat tails, copulas, regime shifts, or GARCH.
+- Not a full stress testing platform.
 
-## Ideas for stronger stress modeling
-- Historical scenario replay (e.g., 2008, COVID) and worst-k day blocks.
-- t-distribution or copula-based dependence to capture tail co-movements.
-- GARCH/EGARCH volatility scaling and regime detection.
-- Factor-based shocks (e.g., market, rates, credit) mapped to tickers/portfolio weights.
-- Non-linear payoff support and portfolio aggregation.
+## Troubleshooting
+- “Not enough overlapping data”: check date range, markets/holidays, or widen the window.
+- CORS errors in prod: ensure `ALLOW_ORIGINS` includes exactly your frontend origin(s).
+- Mixed content: access both frontend and backend via HTTPS through NPM.
+
+## Project structure
+```
+backend/            # FastAPI server
+	main.py           # API endpoints
+	requirements.txt  # Python deps
+nginx/default.conf  # Static site nginx config (Docker)
+docker-compose.yml  # Frontend (8080) + Backend (8000)
+index.html, main.js # Frontend UI and logic (Plotly, fetch)
+SELF_HOSTING.md     # Detailed NPM + Cloudflare guide
+```
