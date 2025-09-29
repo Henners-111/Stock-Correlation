@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node (not used, but safe for future)
+node_modules/
+
+# Logs
+*.log
+
+# Env
+.env
+.env.*
