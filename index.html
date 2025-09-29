@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<title>Stock Correlation & Stress App</title>
+	<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+	<style>
+		:root {
+			--bg: #0b1220;
+			--card: #121a2b;
+			--muted: #8aa0c6;
+			--accent: #4f83ff;
+			--good: #00c853;
+			--bad: #ff5252;
+		}
+		* { box-sizing: border-box; }
+		body { margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:#e6edf7; }
+		header { padding:24px 16px; border-bottom:1px solid #1e2a44; position:sticky; top:0; background:linear-gradient(180deg, #0b1220 0%, #0b1220cc 100%); backdrop-filter: blur(6px); z-index:10; }
+		.container { max-width:1200px; margin:0 auto; padding:16px; }
+		h1 { margin:0 0 8px 0; font-size:22px; }
+		.subtitle { color:var(--muted); font-size:13px; }
+		.controls { display:grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap:10px; margin-top:16px; }
+		.control { display:flex; flex-direction:column; gap:6px; background:var(--card); padding:10px; border:1px solid #1e2a44; border-radius:10px; }
+		.control label { font-size:12px; color:var(--muted); }
+		.control input, .control select { background:#0c1424; color:#e6edf7; border:1px solid #253555; border-radius:8px; padding:8px 10px; font-size:14px; }
+		.btn { align-self:end; background:var(--accent); color:white; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
+		.btn:disabled { opacity:0.6; cursor:not-allowed; }
+		.row { display:grid; grid-template-columns: 1fr; gap:16px; margin-top:16px; }
+		@media (min-width: 900px){ .row { grid-template-columns: 1fr 1fr; } }
+		.card { background:var(--card); border:1px solid #1e2a44; border-radius:14px; padding:12px; }
+		.stats { display:grid; grid-template-columns: repeat(6, 1fr); gap:10px; }
+		.stat { background:#0c1424; border:1px solid #253555; border-radius:12px; padding:12px; }
+		.stat .label { font-size:12px; color:var(--muted); }
+		.stat .value { font-size:18px; font-weight:700; margin-top:6px; }
+		.status { margin-top:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; color:#c7d2e6; }
+		.status.error { color: var(--bad); }
+		.grid-1 { display:grid; grid-template-columns: 1fr; gap:16px; }
+		.chart { height:360px; }
+	</style>
+</head>
+<body>
+	<header>
+		<div class="container">
+			<h1>Stock Correlation & Stress App</h1>
+			<div class="subtitle">Compare two tickers, compute correlations and stress impacts, and visualize results.</div>
+			<div class="controls">
+				<div class="control">
+					<label for="tickerA">Ticker A</label>
+					<input id="tickerA" value="GOOGL" />
+				</div>
+				<div class="control">
+					<label for="tickerB">Ticker B</label>
+					<input id="tickerB" value="AAPL" />
+				</div>
+				<div class="control">
+					<label for="start">Start</label>
+					<input id="start" type="date" value="2023-01-01" />
+				</div>
+				<div class="control">
+					<label for="end">End</label>
+					<input id="end" type="date" value="2025-09-29" />
+				</div>
+				<div class="control">
+					<label for="shock">Shock to A (%)</label>
+					<input id="shock" type="number" value="5" step="0.1" />
+				</div>
+				<div class="control">
+					<label for="window">Rolling window (days)</label>
+					<input id="window" type="number" value="30" min="5" step="1" />
+				</div>
+				<button id="run" class="btn">Run</button>
+			</div>
+			<div id="status" class="status">Ready.</div>
+		</div>
+	</header>
+	<main class="container">
+				<div class="card" style="margin-bottom:16px">
+					<div class="controls" style="grid-template-columns: repeat(8, minmax(120px, 1fr));">
+						<div class="control">
+							<label for="mode">Simulation mode</label>
+							<select id="mode">
+								<option value="conditional">Conditional (B | A shock)</option>
+								<option value="normal">Joint Normal</option>
+								<option value="t">Joint Student-t</option>
+							</select>
+						</div>
+						<div class="control">
+							<label for="nu">t degrees of freedom</label>
+							<input id="nu" type="number" value="5" min="3" step="1" />
+						</div>
+						<div class="control">
+							<label for="scenario">Scenario</label>
+							<select id="scenario">
+								<option value="none">None</option>
+								<option value="2008">GFC 2008-09-01→2009-03-31</option>
+								<option value="covid">COVID 2020-02-15→2020-04-15</option>
+								<option value="worstk">Worst-k days (A)</option>
+							</select>
+						</div>
+						<div class="control">
+							<label for="worstk">Worst-k (days)</label>
+							<input id="worstk" type="number" value="10" min="1" step="1" />
+						</div>
+						<div class="control">
+							<label for="volModel">Vol model</label>
+							<select id="volModel">
+								<option value="static">Static</option>
+								<option value="ewma">EWMA</option>
+							</select>
+						</div>
+						<div class="control">
+							<label for="lambda">EWMA lambda</label>
+							<input id="lambda" type="number" value="0.94" min="0.5" max="0.99" step="0.01" />
+						</div>
+						<div class="control">
+							<label for="bench">Benchmark ticker</label>
+							<input id="bench" value="^GSPC" />
+						</div>
+						<div class="control">
+							<label for="benchShock">Benchmark shock (%)</label>
+							<input id="benchShock" type="number" value="0" step="0.1" />
+						</div>
+						<div class="control">
+							<label for="wA">Weight A</label>
+							<input id="wA" type="number" value="0.5" step="0.01" />
+						</div>
+						<div class="control">
+							<label for="wB">Weight B</label>
+							<input id="wB" type="number" value="0.5" step="0.01" />
+						</div>
+						<div class="control">
+							<label for="cap">Return cap</label>
+							<input id="cap" type="number" value="" placeholder="e.g. 0.1" />
+						</div>
+						<div class="control">
+							<label for="floor">Return floor</label>
+							<input id="floor" type="number" value="" placeholder="e.g. -0.1" />
+						</div>
+					</div>
+				</div>
+		<div class="card">
+			<div class="stats">
+				<div class="stat"><div class="label">Overlap Days</div><div id="s-overlap" class="value">-</div></div>
+				<div class="stat"><div class="label">Pearson r</div><div id="s-r" class="value">-</div></div>
+				<div class="stat"><div class="label">Beta (B on A)</div><div id="s-beta" class="value">-</div></div>
+				<div class="stat"><div class="label">Alpha</div><div id="s-alpha" class="value">-</div></div>
+				<div class="stat"><div class="label">Vol A / Vol B</div><div id="s-vol" class="value">-</div></div>
+				<div class="stat"><div class="label">Covariance</div><div id="s-cov" class="value">-</div></div>
+			</div>
+		</div>
+
+		<div class="row">
+			<div class="card">
+				<div id="ts_prices" class="chart"></div>
+			</div>
+			<div class="card">
+				<div id="scatter" class="chart"></div>
+			</div>
+		</div>
+
+		<div class="row">
+			<div class="card">
+				<div id="rolling" class="chart"></div>
+			</div>
+			<div class="card">
+				<div class="grid-1">
+					<div id="mc" class="chart"></div>
+					<div class="stats">
+						<div class="stat"><div class="label">Expected B (shock)</div><div id="s-expB" class="value">-</div></div>
+						<div class="stat"><div class="label">MC p5 / p50 / p95</div><div id="s-quant" class="value">-</div></div>
+						<div class="stat"><div class="label">Samples</div><div id="s-samples" class="value">-</div></div>
+					<div class="stat"><div class="label">Portfolio p5 / p50 / p95</div><div id="s-quant-port" class="value">-</div></div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</main>
+	<script type="module" src="main.js"></script>
+</body>
+</html>
