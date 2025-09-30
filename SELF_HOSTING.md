@@ -1,53 +1,75 @@
-Self-hosting guide (Nginx Proxy Manager + Cloudflare)
+Self-hosting guide (GitHub Pages + NPM + Cloudflare)
 
-Overview
-- Two containers via docker-compose:
-  - backend: FastAPI on 8000
-  - frontend: Nginx serving static files on 8080
-- Put both behind Nginx Proxy Manager (NPM) with Cloudflare DNS.
+Architecture
+- Frontend: served by GitHub Pages from this repo (static assets only).
+- Backend: FastAPI app running on your home server (Proxmox VM, bare metal, etc.).
+- Routing: Cloudflare DNS → Nginx Proxy Manager (NPM) on your home network → backend service.
 
-Quick start
-1) Clone repo to your Docker host
-2) Create .env (optional) to set CORS origins for backend:
-   ALLOW_ORIGINS=https://stock.nethercot.uk,https://api.stock.nethercot.uk
-3) Launch containers
-   docker compose up -d
-4) Verify locally:
-   - Frontend: http://<host>:8080
-   - Backend:  http://<host>:8000/
+1. Frontend on GitHub Pages
+- Push this repository to GitHub.
+- Settings → Pages → “Deploy from a branch”, select `main` and `/ (root)`.
+- Custom domain (optional): add `CNAME` file with `stock.nethercot.uk` (already provided) and create a Cloudflare CNAME record `stock` → `<your-username>.github.io` (orange cloud ON). After Pages issues HTTPS, enable “Force HTTPS”.
 
-Nginx Proxy Manager (NPM)
-- Create Proxy Host for frontend:
-  - Domain Names: stock.nethercot.uk
-  - Scheme: http, Forward Hostname/IP: <docker-host-ip>, Forward Port: 8080
+2. Backend on your home server
+- Install Python 3.10+.
+- Clone repo and set up a virtual environment:
+```bash
+git clone https://github.com/<your-username>/stock-corr-demo.git
+cd stock-corr-demo
+python3 -m venv .venv
+source .venv/bin/activate   # PowerShell: .\.venv\Scripts\Activate.ps1
+pip install -r backend/requirements.txt
+```
+- Run the API (foreground test):
+```bash
+cd backend
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+- For continuous operation create a systemd service, e.g. `/etc/systemd/system/stockcorr.service`:
+```
+[Unit]
+Description=Stock Correlation API
+After=network.target
+
+[Service]
+User=svc-stockcorr
+WorkingDirectory=/opt/stock-corr-demo/backend
+Environment="ALLOW_ORIGINS=https://stock.nethercot.uk,https://api.stock.nethercot.uk"
+ExecStart=/opt/stock-corr-demo/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+- Reload and start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now stockcorr
+```
+
+3. Publish through Nginx Proxy Manager
+- In NPM create a Proxy Host `api.stock.nethercot.uk`.
+  - Scheme: http
+  - Forward Hostname/IP: <backend-local-ip>
+  - Forward Port: 8000
   - Enable Websockets
-  - SSL tab: Request a new SSL certificate (Let's Encrypt), Force SSL, HTTP/2, HSTS
-- Create Proxy Host for backend API:
-  - Domain Names: api.stock.nethercot.uk
-  - Scheme: http, Forward Hostname/IP: <docker-host-ip>, Forward Port: 8000
-  - Enable Websockets
-  - SSL tab: Request certificate, Force SSL, HTTP/2, HSTS
+  - SSL tab: Request Let’s Encrypt cert, enable Force SSL, HTTP/2, HSTS
 
-Cloudflare DNS
-- Add two A records (or proxied orange-cloud):
-  - stock  -> your public IP
-  - api    -> your public IP
-- If using the Cloudflare proxy (orange cloud ON), ensure NPM obtains certs successfully. If issues, temporarily gray-cloud OFF to issue cert, then re-enable.
+4. Cloudflare DNS
+- Record `api` (A or AAAA) → your home public IP (orange cloud ON).
+- Record `stock` (CNAME) → `<your-username>.github.io` (or use Pages’ recommended target). Ensure `stock` also has orange cloud ON for proxying.
+- If Let’s Encrypt issuance fails, temporarily set the record to gray cloud OFF, issue cert in NPM, then toggle back to orange.
 
-Frontend config
-- The frontend uses window.location.hostname to decide API base and points to https://api.stock.nethercot.uk in production. No changes needed.
+5. Verify
+- https://stock.nethercot.uk loads the GitHub Pages frontend.
+- The browser fetches data from https://api.stock.nethercot.uk/history… with 200 responses.
+- https://api.stock.nethercot.uk/ returns the backend health JSON.
 
-Backend CORS
-- Set allowed origins via env variable when needed:
-  - In docker-compose.yml, set environment:
-    ALLOW_ORIGINS=https://stock.nethercot.uk,https://api.stock.nethercot.uk
-
-Updating
-- Pull latest repo and restart:
-  docker compose pull
-  docker compose up -d --build
+6. Updates
+- Frontend: push to GitHub main, Pages redeploys automatically.
+- Backend: pull latest code on the server, reinstall requirements if needed, restart systemd service (`sudo systemctl restart stockcorr`).
 
 Troubleshooting
-- 502 in NPM: Check containers are running: docker ps
-- CORS errors: Confirm ALLOW_ORIGINS includes your frontend origin exactly (scheme + domain)
-- Mixed content: Ensure you access frontend via HTTPS and API via HTTPS through NPM.
+- CORS error: ensure `ALLOW_ORIGINS` includes `https://stock.nethercot.uk` exactly.
+- 522/524/502: verify NPM can reach the backend IP/port and the systemd service is running.
+- Mixed content: confirm both frontend and API are accessed via HTTPS.

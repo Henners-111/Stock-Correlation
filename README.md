@@ -5,7 +5,7 @@ Frontend (static HTML + JS) + FastAPI backend. Fetches Yahoo Finance history, co
 ## Quick start (local)
 - Requirements: Python 3.10+ (no Node needed)
 
-Option A — simple local run
+Local run
 ```powershell
 # 1) Create venv (optional)
 python -m venv .venv
@@ -22,19 +22,38 @@ python -m http.server 8080  # http://127.0.0.1:8080
 ```
 Open http://127.0.0.1:8080 and click Run. In dev, the frontend calls http://127.0.0.1:8000.
 
-Option B — Docker Compose
-```powershell
-docker compose up -d
-# Frontend: http://127.0.0.1:8080
-# Backend : http://127.0.0.1:8000
-```
+## Deploy via GitHub Pages + home backend
+1. **Frontend (static)**
+	- Push the repository to GitHub.
+	- In repo settings → Pages, choose “Deploy from branch”, select `main` and `/ (root)`.
+	- (Optional) Add `CNAME` with `stock.nethercot.uk` and point Cloudflare DNS A record `stock` to your home IP. Ensure “Force HTTPS” is on once the cert is issued.
 
-## Deploy behind Nginx Proxy Manager + Cloudflare
-- Create two Proxy Hosts in NPM:
-	- stock.nethercot.uk → http://<vm-ip>:8080 (Let’s Encrypt, Force SSL)
-	- api.stock.nethercot.uk → http://<vm-ip>:8000 (Let’s Encrypt, Force SSL)
-- Cloudflare DNS: A records for stock and api to your public IP (proxy ON). If LE fails, temporarily turn proxy OFF to issue certs.
-- Full, step-by-step guide: see `SELF_HOSTING.md`.
+2. **Backend (FastAPI) on your home server**
+	- Install Python 3.10+ on the host (Proxmox VM, bare metal, etc.).
+	- Clone the repo and install deps:
+```bash
+git clone https://github.com/<your-username>/stock-corr-demo.git
+cd stock-corr-demo
+python3 -m venv .venv
+source .venv/bin/activate  # PowerShell: .\.venv\Scripts\Activate.ps1
+pip install -r backend/requirements.txt
+```
+	- Run the API (example using uvicorn directly):
+```bash
+cd backend
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+	- For a permanent service, create a systemd unit or Supervisor entry that launches the above command on boot.
+
+3. **Expose through Nginx Proxy Manager (NPM) + Cloudflare**
+	- In NPM, create a Proxy Host `api.stock.nethercot.uk` → http://<home-server-ip>:8000. Enable Websockets. Issue a Let’s Encrypt cert, Force SSL, HTTP/2, HSTS.
+	- In Cloudflare, add an A record `api` pointing to your home IP (orange cloud ON). If LE fails, temporarily gray-cloud OFF, issue cert, then re-enable.
+	- The frontend (GitHub Pages) already calls `https://api.stock.nethercot.uk` in production, so once DNS + certs propagate the app will work end-to-end.
+
+4. **CORS**
+	- Ensure the backend `ALLOW_ORIGINS` env includes `https://stock.nethercot.uk` (and any other host you serve the frontend from). For local testing, you can leave defaults.
+
+See `SELF_HOSTING.md` for a fuller walkthrough of the NPM + Cloudflare flow.
 
 ## Configuration (env)
 - `ALLOW_ORIGINS`: comma-separated CORS origins (e.g., `https://stock.nethercot.uk,https://api.stock.nethercot.uk`).
@@ -67,8 +86,6 @@ docker compose up -d
 backend/            # FastAPI server
 	main.py           # API endpoints
 	requirements.txt  # Python deps
-nginx/default.conf  # Static site nginx config (Docker)
-docker-compose.yml  # Frontend (8080) + Backend (8000)
 index.html, main.js # Frontend UI and logic (Plotly, fetch)
 SELF_HOSTING.md     # Detailed NPM + Cloudflare guide
 ```
