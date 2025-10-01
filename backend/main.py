@@ -97,6 +97,36 @@ def get_history(ticker: str, start: str, end: str):
 
 		orig_ticker = ticker
 		ticker = normalize_ticker(ticker)
+
+		def build_symbol_variants(user_sym: str, normalized_sym: str) -> list[str]:
+			key_user = (user_sym or "").strip().lower()
+			key_norm = (normalized_sym or "").strip().lower()
+			variants = []
+			# Always try the normalized symbol first
+			if normalized_sym:
+				variants.append(normalized_sym)
+			# Gold variants
+			if key_user in {"gold", "xau", "xauusd"} or key_norm in {"xauusd=x", "gc=f", "xauusd"}:
+				# Yahoo spot & futures, ETF, and Stooq spot symbol
+				for v in ["XAUUSD=X", "GC=F", "GLD", "XAUUSD"]:
+					if v not in variants:
+						variants.append(v)
+			# US rates variants (use ETFs as fallbacks when indices blocked)
+			if key_user in {"us10y", "10y"} or key_norm == "^tnx":
+				# Yahoo index, ETF proxy, and Stooq interest rate index
+				for v in ["^TNX", "IEF", "INRTUS.M"]:
+					if v not in variants:
+						variants.append(v)
+			if key_user in {"us30y", "30y"} or key_norm == "^tyx":
+				for v in ["^TYX", "TLT"]:
+					if v not in variants:
+						variants.append(v)
+			# Ensure original user symbol is also tried if distinct
+			if user_sym and user_sym not in variants:
+				variants.append(user_sym)
+			return variants
+
+		symbol_variants = build_symbol_variants(orig_ticker, ticker)
 		# Normalize incoming dates to YYYY-MM-DD accepting various formats
 		def normalize_date(s: str) -> str:
 			if not s:
@@ -244,17 +274,24 @@ def get_history(ticker: str, start: str, end: str):
 			providers = ["yahoo", "stooq"]
 
 		df = pd.DataFrame()
+		used_symbol: Optional[str] = None
 		errors: List[str] = []
 		for p in providers:
-			if p == "yahoo":
-				df = fetch_yahoo(ticker, start, end)
-			elif p == "stooq":
-				df = fetch_stooq(ticker, start, end)
-			else:
-				logger.warning(f"Unknown provider '{p}' ignored")
-				continue
-			if df is not None and not df.empty:
-				used_provider = p
+			found_for_provider = False
+			for sym in symbol_variants:
+				if p == "yahoo":
+					df = fetch_yahoo(sym, start, end)
+				elif p == "stooq":
+					df = fetch_stooq(sym, start, end)
+				else:
+					logger.warning(f"Unknown provider '{p}' ignored")
+					continue
+				if df is not None and not df.empty:
+					used_provider = p
+					used_symbol = sym
+					found_for_provider = True
+					break
+			if found_for_provider:
 				break
 			else:
 				errors.append(f"{p}: no data")
@@ -309,7 +346,10 @@ def get_history(ticker: str, start: str, end: str):
 				"volume": v,
 			})
 
-		return {"ticker": orig_ticker, "data": records, "provider": used_provider}
+		result = {"ticker": orig_ticker, "data": records, "provider": used_provider}
+		if used_symbol and used_symbol != orig_ticker:
+			result["provider_symbol"] = used_symbol
+		return result
 	except Exception as e:
 		# Do not leak internal error as 500; return structured message
 		logger.exception(f"/history failed for {ticker}: {e}")
