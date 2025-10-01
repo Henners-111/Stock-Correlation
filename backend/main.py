@@ -12,6 +12,11 @@ import os
 
 app = FastAPI()
 
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+	
 # Allow CORS origins to be configured via env var (comma-separated)
 _env_origins = os.getenv("ALLOW_ORIGINS")
 if _env_origins:
