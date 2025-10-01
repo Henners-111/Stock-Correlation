@@ -222,4 +222,41 @@ Plotly.newPlot('mc',[{x:bSims,type:'histogram',nbinsx:50,marker:{color:'#4f83ff'
 	try { Plotly.purge('ts_prices'); Plotly.purge('scatter'); Plotly.purge('rolling'); Plotly.purge('mc'); } catch {}
 }
 }
-$('run').addEventListener('click',run);
+// Ensure the DOM is ready before binding; guard if element missing
+if (document.readyState === 'loading') {
+	document.addEventListener('DOMContentLoaded', () => {
+		const btn = $('run');
+		if (btn) btn.addEventListener('click', run);
+		// Diagnose potential overlay blocking clicks
+		try {
+			const checkClickability = () => {
+				const b = $('run');
+				if (!b) return;
+				const r = b.getBoundingClientRect();
+				const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+				if (el && el !== b && !b.contains(el)) {
+					setStatus('Notice: Adjusting button z-index to ensure it is clickable.');
+					b.style.position = 'relative';
+					b.style.zIndex = '1000';
+				}
+			};
+			checkClickability();
+			window.addEventListener('resize', checkClickability);
+		} catch {}
+	});
+} else {
+	const btn = $('run');
+	if (btn) btn.addEventListener('click', run);
+	try {
+		const b = $('run');
+		if (b) {
+			const r = b.getBoundingClientRect();
+			const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+			if (el && el !== b && !b.contains(el)) {
+				setStatus('Notice: Adjusting button z-index to ensure it is clickable.');
+				b.style.position = 'relative';
+				b.style.zIndex = '1000';
+			}
+		}
+	} catch {}
+}

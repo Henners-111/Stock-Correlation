@@ -26,6 +26,8 @@
 		.control input, .control select { background:#0c1424; color:#e6edf7; border:1px solid #253555; border-radius:8px; padding:8px 10px; font-size:14px; }
 		.btn { align-self:end; background:var(--accent); color:white; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
 		.btn:disabled { opacity:0.6; cursor:not-allowed; }
+		/* Ensure clicks are never blocked by overlays */
+		header, .btn { pointer-events: auto; }
 		.row { display:grid; grid-template-columns: 1fr; gap:16px; margin-top:16px; }
 		@media (min-width: 900px){ .row { grid-template-columns: 1fr 1fr; } }
 		.card { background:var(--card); border:1px solid #1e2a44; border-radius:14px; padding:12px; }
@@ -69,7 +71,7 @@
 					<label for="window">Rolling window (days)</label>
 					<input id="window" type="number" value="30" min="5" step="1" />
 				</div>
-				<button id="run" class="btn">Run</button>
+				<button id="run" class="btn" type="button">Run</button>
 			</div>
 			<div id="status" class="status">Ready.</div>
 		</div>
@@ -176,6 +178,6 @@
 			</div>
 		</div>
 	</main>
-	<script type="module" src="main.js"></script>
+	<script src="main.js?v=20251001" defer></script>
 </body>
 </html>
