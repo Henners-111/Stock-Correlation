@@ -75,6 +75,28 @@ def root():
 @app.get("/history")
 def get_history(ticker: str, start: str, end: str):
 	try:
+		# Normalize some common aliases (US rates, gold) to provider symbols
+		def normalize_ticker(sym: str) -> str:
+			if not sym:
+				return sym
+			key = sym.strip().lower()
+			aliases = {
+				"us10y": "^TNX",  # 10Y Treasury yield index (approx x10)
+				"10y": "^TNX",
+				"^tnx": "^TNX",
+				"us30y": "^TYX",  # 30Y Treasury yield index (approx x10)
+				"30y": "^TYX",
+				"^tyx": "^TYX",
+				"gold": "XAUUSD=X",  # Gold spot in USD
+				"xau": "XAUUSD=X",
+				"xauusd": "XAUUSD=X",
+				"xauusd=x": "XAUUSD=X",
+				"gc=f": "GC=F",  # Gold futures continuous
+			}
+			return aliases.get(key, sym)
+
+		orig_ticker = ticker
+		ticker = normalize_ticker(ticker)
 		# Normalize incoming dates to YYYY-MM-DD accepting various formats
 		def normalize_date(s: str) -> str:
 			if not s:
@@ -214,6 +236,10 @@ def get_history(ticker: str, start: str, end: str):
 		# Decide provider order (prefer Stooq by default to avoid Yahoo blocks on some hosts)
 		providers_env = os.getenv("PROVIDERS", "stooq,yahoo")
 		providers = [p.strip().lower() for p in providers_env.split(",") if p.strip()]
+		# If the normalized ticker requires Yahoo (e.g., '^' indices or FX '=')
+		# then prefer Yahoo first for this request regardless of default order
+		if ticker and (ticker.startswith('^') or '=' in ticker):
+			providers = ["yahoo"] + [p for p in providers if p != "yahoo"]
 		if not providers:
 			providers = ["yahoo", "stooq"]
 
@@ -283,11 +309,11 @@ def get_history(ticker: str, start: str, end: str):
 				"volume": v,
 			})
 
-		return {"ticker": ticker, "data": records, "provider": used_provider}
+		return {"ticker": orig_ticker, "data": records, "provider": used_provider}
 	except Exception as e:
 		# Do not leak internal error as 500; return structured message
 		logger.exception(f"/history failed for {ticker}: {e}")
-		return {"ticker": ticker, "data": [], "error": str(e)}
+		return {"ticker": orig_ticker if 'orig_ticker' in locals() else ticker, "data": [], "error": str(e)}
 
 
 if __name__ == "__main__":

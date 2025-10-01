@@ -183,19 +183,52 @@ $('s-cov').textContent = cov(rA,rB).toExponential(2);
 setStatus(`Computed stats. r=${$('s-r').textContent}, beta=${$('s-beta').textContent}, overlap=${overlapCount}`);
 
 
-// Monte Carlo: B | (A = muA + shock) is Normal with:
-// mean = muB + (CovAB/VarA) * (shock), var = VarB - CovAB^2/VarA
+// Monte Carlo paths (GBM) for B with correlation to A and a shock applied to A at t_shock
 const varA_ = cov(rA,rA), varB_ = cov(rB,rB), covAB_ = cov(rA,rB);
-const meanBCond = muB + (covAB_ / varA_) * (shock);
-const varBCond = Math.max(1e-12, varB_ - (covAB_ * covAB_) / varA_);
-const bSims = Array.from({length:5000}, () => meanBCond + Math.sqrt(varBCond) * gaussian());
-// Quantiles
-const quant = (arr,p)=>{ const s=[...arr].sort((x,y)=>x-y); const k=Math.floor((s.length-1)*p); return s[k]; };
-const q05 = quant(bSims,0.05), q50 = quant(bSims,0.50), q95 = quant(bSims,0.95);
-expectedB = meanBCond;
+const rho = Math.max(-0.999, Math.min(0.999, covAB_ / (Math.sqrt(varA_) * Math.sqrt(varB_))));
+const sigA = Math.sqrt(Math.max(1e-12, varA_));
+const sigB = Math.sqrt(Math.max(1e-12, varB_));
+const S0B = b[b.length-1].close;
+const steps = 252; // ~1 trading year
+const nPaths = 200;
+const shockStep = Math.floor(steps/4); // quarter into the horizon
+// conditional mean shift to B for a shock to A of size `shock`
+const kappa = (varA_ > 1e-12) ? (covAB_ / varA_) : 0;
+const postShockVolScale = 1.2; // widen uncertainty after shock
+
+function simulateBPathsGBM(S0, muA, muB, sA, sB, corr, n, m, shockIdx, shockRet){
+	const dt = 1.0; // daily log-return step
+	const paths = new Array(m);
+	for(let j=0;j<m;j++){
+		const series = new Array(n+1);
+		series[0] = S0;
+		let volScale = 1.0;
+		for(let t=1;t<=n;t++){
+			// Correlated normals via Cholesky
+			const z0 = gaussian();
+			const z1 = gaussian();
+			const eA = z0;
+			const eB = corr*z0 + Math.sqrt(1-corr*corr)*z1;
+			let rAstep = muA*dt + sA*Math.sqrt(dt)*eA;
+			let rBstep = muB*dt + (sB*volScale)*Math.sqrt(dt)*eB;
+			if (t===shockIdx){
+				rAstep += shockRet; // exogenous shock to A
+				rBstep += kappa * shockRet; // pass-through to B conditional mean
+				volScale = postShockVolScale; // widen vol going forward
+			}
+			series[t] = series[t-1] * Math.exp(rBstep);
+		}
+		paths[j] = series;
+	}
+	return paths;
+}
+
+const pathsB = simulateBPathsGBM(S0B, muA, muB, sigA, sigB, rho, steps, nPaths, shockStep, shock);
+// Expected B shift under shock (one-step conditional mean shift)
+expectedB = muB + kappa * shock;
 $('s-expB').textContent = isFinite(expectedB) ? expectedB.toExponential(2) : 'NA';
-$('s-quant').textContent = `${q05.toExponential(2)} / ${q50.toExponential(2)} / ${q95.toExponential(2)}`;
-$('s-samples').textContent = String(bSims.length);
+$('s-quant').textContent = `— / — / —`;
+$('s-samples').textContent = String(nPaths);
 
 
 // Price series
@@ -212,8 +245,18 @@ Plotly.newPlot('scatter',[
 // Rolling 30-day correlation
 const roll=[]; const w=windowSize; for(let i=0;i<=rA.length-w;i++){ roll.push(pearson(rA.slice(i,i+w),rB.slice(i,i+w))); }
 Plotly.newPlot('rolling',[{x:RA.dates.slice(w-1),y:roll,mode:'lines',line:{color:'#4f83ff'}}],{title:`Rolling ${w}-day correlation`,yaxis:{range:[-1,1]},plot_bgcolor:'#0c1424',paper_bgcolor:'#121a2b',font:{color:'#e6edf7'}});
-// Monte Carlo
-Plotly.newPlot('mc',[{x:bSims,type:'histogram',nbinsx:50,marker:{color:'#4f83ff'}}],{title:`Monte Carlo ${tickerB} | conditional on ${Math.round(shock*100)}% shock to ${tickerA}`,plot_bgcolor:'#0c1424',paper_bgcolor:'#121a2b',font:{color:'#e6edf7'}});
+// Monte Carlo Paths chart (smooth, time-based)
+const xIdx = Array.from({length:steps+1}, (_,i)=>i);
+const traces = pathsB.map(series=>({ x: xIdx, y: series, mode: 'lines', line: {color:'#4f83ff', width:1}, opacity:0.25, showlegend:false }));
+// Add a single red path with shock (fresh simulation to highlight)
+const redPath = simulateBPathsGBM(S0B, muA, muB, sigA, sigB, rho, steps, 1, shockStep, shock)[0];
+traces.push({ x:xIdx, y:redPath, mode:'lines', name:'Shocked path', line:{color:'#ff5252', width:2}, opacity:0.95, showlegend:true });
+Plotly.newPlot('mc', traces, {
+	title: `Monte Carlo ${tickerB} price paths (shock to ${tickerA} at t=${shockStep})`,
+	xaxis: { title: 'Time (days)' },
+	yaxis: { title: `${tickerB} Price` },
+	plot_bgcolor:'#0c1424', paper_bgcolor:'#121a2b', font:{color:'#e6edf7'}
+});
 
 
 }catch(e){
