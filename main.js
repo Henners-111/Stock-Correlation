@@ -7,21 +7,48 @@ function setStatus(msg) {
 	console.log(msg);
 }
 
-// Choose API base depending on environment
-// (replaced by override-enabled version below)
-// Choose API base depending on environment
-// - Localhost → local FastAPI
-// - Otherwise → Render backend by default
-// You can override via URL: ?api=https://your-backend.example.com
+// Resolve API base dynamically to ensure the frontend reaches a live backend in prod
+// Priority: URL ?api= override → Render → custom domain → localhost (only on localhost)
 const urlApiOverride = new URLSearchParams(location.search).get('api');
-const defaultApiBase = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-	? 'http://127.0.0.1:8000'
-	: 'https://stock-correlation.onrender.com';
-const API_BASE = urlApiOverride || defaultApiBase;
+const isLocalHost = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+const candidates = [];
+if (urlApiOverride) candidates.push(urlApiOverride);
+candidates.push('https://stock-correlation.onrender.com');
+candidates.push('https://api.stock.nethercot.uk');
+if (isLocalHost) candidates.push('http://127.0.0.1:8000');
+
+let RESOLVED_API_BASE = sessionStorage.getItem('API_BASE') || '';
+async function probeApi(base, timeoutMs=3000){
+	try{
+		const ctrl = new AbortController();
+		const t = setTimeout(()=>ctrl.abort(), timeoutMs);
+		const res = await fetch(`${base}/healthz`, { mode: 'cors', cache: 'no-store', signal: ctrl.signal });
+		clearTimeout(t);
+		if(!res.ok) return false;
+		const j = await res.json().catch(()=>({}));
+		return j && (j.status==='ok' || j.name==='Stock Correlation API');
+	}catch{ return false; }
+}
+async function resolveApiBase(){
+	if(RESOLVED_API_BASE) return RESOLVED_API_BASE;
+	for(const base of candidates){
+		if(await probeApi(base)){
+			RESOLVED_API_BASE = base;
+			sessionStorage.setItem('API_BASE', RESOLVED_API_BASE);
+			setStatus(`Using API: ${RESOLVED_API_BASE}`);
+			return RESOLVED_API_BASE;
+		}
+	}
+	// Fallback to first candidate even if probe failed (to surface errors clearly)
+	RESOLVED_API_BASE = candidates[0];
+	sessionStorage.setItem('API_BASE', RESOLVED_API_BASE);
+	return RESOLVED_API_BASE;
+}
 
 async function fetchStock(ticker, start, end) {
-		const url = `${API_BASE}/history?ticker=${encodeURIComponent(ticker)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
-		const res = await fetch(url, { mode: 'cors' });
+		const base = await resolveApiBase();
+		const url = `${base}/history?ticker=${encodeURIComponent(ticker)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+		const res = await fetch(url, { mode: 'cors', cache: 'no-store' });
 		if (!res.ok) throw new Error(`Backend error ${res.status}`);
 		const json = await res.json();
 		if (json && json.error) throw new Error(json.error);
