@@ -8,9 +8,15 @@ from pydantic import BaseModel
 import pandas as pd
 import math
 import os
+import logging
 
 
 app = FastAPI()
+
+# Logger
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+	logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 @app.get("/healthz")
 def healthz():
@@ -90,49 +96,119 @@ def get_history(ticker: str, start: str, end: str):
 		start = normalize_date(start)
 		end = normalize_date(end)
 
-		# Be explicit with yfinance args to avoid API defaults changing
-		df = yf.download(
-			ticker,
-			start=start,
-			end=end,
-			progress=False,
-			auto_adjust=False,
-			group_by="column",
-			threads=True,
-		)
-		if df is None or df.empty:
-			return {"ticker": ticker, "data": []}
+		# Helpers
+		def normalize_ohlcv_df(df: pd.DataFrame) -> pd.DataFrame:
+			if df is None or df.empty:
+				return pd.DataFrame()
+			df = df.reset_index()
+			if isinstance(df.columns, pd.MultiIndex):
+				df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+			# Find datetime column and name it 'date'
+			dt_col_name = None
+			if len(df.columns) > 0:
+				for col in df.columns:
+					series = df[col]
+					# Guard against empty series access
+					is_dt = pd.api.types.is_datetime64_any_dtype(series)
+					if not is_dt and len(series) > 0:
+						is_dt = isinstance(series.iloc[0], (pd.Timestamp, datetime))
+					if is_dt:
+						dt_col_name = col
+						break
+			if dt_col_name is not None and str(dt_col_name).lower() != "date":
+				df = df.rename(columns={dt_col_name: "date"})
+			# Lowercase normalize
+			df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+			# Standardize common variants
+			rename_map = {
+				"adj_close": "adjclose",
+				"adjclose": "adj_close",
+			}
+			df = df.rename(columns=rename_map)
+			return df
 
-		# Flatten index to column and normalize names robustly
-		df = df.reset_index()
-		# If MultiIndex columns, take the first level (field name), ignore ticker level
-		if isinstance(df.columns, pd.MultiIndex):
-			df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-		# Detect datetime-like column and rename to 'date' before lowercasing
-		dt_col_name = None
-		for col in df.columns:
-			series = df[col]
-			if pd.api.types.is_datetime64_any_dtype(series) or isinstance(series.iloc[0], (pd.Timestamp, datetime)):
-				dt_col_name = col
+		def filter_date_range(df: pd.DataFrame, start_s: str, end_s: str) -> pd.DataFrame:
+			if df.empty:
+				return df
+			try:
+				s = pd.to_datetime(start_s)
+				e = pd.to_datetime(end_s)
+				if "date" in df.columns:
+					df["date"] = pd.to_datetime(df["date"], errors="coerce")
+					df = df[(df["date"] >= s) & (df["date"] <= e)]
+				return df
+			except Exception:
+				return df
+
+		def fetch_yahoo(symbol: str, s: str, e: str) -> pd.DataFrame:
+			try:
+				logger.info(f"/history: fetching from Yahoo for {symbol} {s}→{e}")
+				df = yf.download(
+					symbol,
+					start=s,
+					end=e,
+					progress=False,
+					auto_adjust=False,
+					group_by="column",
+					threads=True,
+				)
+				df = normalize_ohlcv_df(df)
+				return df
+			except Exception as ex:
+				logger.warning(f"Yahoo fetch failed for {symbol}: {ex}")
+				return pd.DataFrame()
+
+		def fetch_stooq(symbol: str, s: str, e: str) -> pd.DataFrame:
+			try:
+				stq_sym = symbol.lower()
+				url = f"https://stooq.com/q/d/l/?s={stq_sym}&i=d"
+				logger.info(f"/history: fetching from Stooq for {symbol} via {url}")
+				df = pd.read_csv(url)
+				# Normalize columns and date range
+				df.columns = [str(c).strip().lower() for c in df.columns]
+				if "date" not in df.columns and "data" in df.columns:
+					df = df.rename(columns={"data": "date"})
+				df = normalize_ohlcv_df(df)
+				df = filter_date_range(df, s, e)
+				return df
+			except Exception as ex:
+				logger.warning(f"Stooq fetch failed for {symbol}: {ex}")
+				return pd.DataFrame()
+
+		# Decide provider order
+		providers_env = os.getenv("PROVIDERS", "yahoo,stooq")
+		providers = [p.strip().lower() for p in providers_env.split(",") if p.strip()]
+		if not providers:
+			providers = ["yahoo", "stooq"]
+
+		df = pd.DataFrame()
+		errors: List[str] = []
+		for p in providers:
+			if p == "yahoo":
+				df = fetch_yahoo(ticker, start, end)
+			elif p == "stooq":
+				df = fetch_stooq(ticker, start, end)
+			else:
+				logger.warning(f"Unknown provider '{p}' ignored")
+				continue
+			if df is not None and not df.empty:
+				used_provider = p
 				break
-		if dt_col_name is not None and str(dt_col_name).lower() != "date":
-			df = df.rename(columns={dt_col_name: "date"})
-		# Now normalize names
-		df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
-		# Standardize common Yahoo names
-		rename_map = {
-			"adj_close": "adjclose",
-			"adjclose": "adj_close",
-		}
-		df = df.rename(columns=rename_map)
+			else:
+				errors.append(f"{p}: no data")
+		else:
+			used_provider = None  # type: ignore[assignment]
+
+		# If still empty, return graceful error
+		if df is None or df.empty:
+			return {"ticker": ticker, "data": [], "error": "; ".join(errors) or "no data"}
 
 		# Select available columns safely
 		needed_cols = ["date", "open", "high", "low", "close"]
-		optional_cols = ["volume"]
 		for col in needed_cols:
 			if col not in df.columns:
-				# If any core OHLC column is missing, return empty set instead of 500
-				return {"ticker": ticker, "data": []}
+				logger.warning(f"Missing column '{col}' after provider normalization; returning empty result")
+				return {"ticker": ticker, "data": [], "provider": used_provider}
 
 		# Drop rows with missing OHLC
 		df = df.dropna(subset=["open", "high", "low", "close", "date"])  # type: ignore
@@ -153,12 +229,13 @@ def get_history(ticker: str, start: str, end: str):
 
 		records: List[dict] = []
 		for _, row in df.iterrows():
-			o = safe_float(row["open"])  # type: ignore[index]
-			h = safe_float(row["high"])  # type: ignore[index]
-			l = safe_float(row["low"])   # type: ignore[index]
-			c = safe_float(row["close"]) # type: ignore[index]
-			v = safe_float(row["volume"]) if "volume" in df.columns else None  # type: ignore[index]
-			date_str = to_date_str(row["date"])  # type: ignore[index]
+			o = safe_float(row.get("open"))
+			h = safe_float(row.get("high"))
+			l = safe_float(row.get("low"))
+			c = safe_float(row.get("close"))
+			v = safe_float(row.get("volume")) if "volume" in df.columns else None
+			date_val = row.get("date")
+			date_str = to_date_str(date_val) if date_val is not None else ""
 			if o is None or h is None or l is None or c is None or not date_str:
 				continue
 			records.append({
@@ -170,9 +247,10 @@ def get_history(ticker: str, start: str, end: str):
 				"volume": v,
 			})
 
-		return {"ticker": ticker, "data": records}
+		return {"ticker": ticker, "data": records, "provider": used_provider}
 	except Exception as e:
 		# Do not leak internal error as 500; return structured message
+		logger.exception(f"/history failed for {ticker}: {e}")
 		return {"ticker": ticker, "data": [], "error": str(e)}
 
 
