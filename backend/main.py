@@ -24,7 +24,7 @@ if _env_origins:
 else:
 	# Sensible defaults for local dev and the provided production domain
 	allow_origins = [
-		"https://stock-correlation.onrender.com"
+		"https://stock-correlation.onrender.com",
 		"https://stock.nethercot.uk",
 		"http://localhost",
 		"http://127.0.0.1",
