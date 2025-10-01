@@ -9,6 +9,9 @@ import pandas as pd
 import math
 import os
 import logging
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 app = FastAPI()
@@ -143,6 +146,16 @@ def get_history(ticker: str, start: str, end: str):
 		def fetch_yahoo(symbol: str, s: str, e: str) -> pd.DataFrame:
 			try:
 				logger.info(f"/history: fetching from Yahoo for {symbol} {s}→{e}")
+				# Use a session with retries and a browser UA to avoid simple bot blocks
+				session = requests.Session()
+				session.headers.update({
+					"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+					"Accept": "*/*",
+					"Accept-Encoding": "gzip, deflate, br",
+					"Connection": "keep-alive",
+				})
+				retry = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+				session.mount("https://", HTTPAdapter(max_retries=retry))
 				df = yf.download(
 					symbol,
 					start=s,
@@ -150,7 +163,8 @@ def get_history(ticker: str, start: str, end: str):
 					progress=False,
 					auto_adjust=False,
 					group_by="column",
-					threads=True,
+					threads=False,
+					session=session,
 				)
 				df = normalize_ohlcv_df(df)
 				return df
@@ -159,21 +173,47 @@ def get_history(ticker: str, start: str, end: str):
 				return pd.DataFrame()
 
 		def fetch_stooq(symbol: str, s: str, e: str) -> pd.DataFrame:
-			try:
-				stq_sym = symbol.lower()
-				url = f"https://stooq.com/q/d/l/?s={stq_sym}&i=d"
-				logger.info(f"/history: fetching from Stooq for {symbol} via {url}")
-				df = pd.read_csv(url)
-				# Normalize columns and date range
-				df.columns = [str(c).strip().lower() for c in df.columns]
-				if "date" not in df.columns and "data" in df.columns:
-					df = df.rename(columns={"data": "date"})
-				df = normalize_ohlcv_df(df)
-				df = filter_date_range(df, s, e)
-				return df
-			except Exception as ex:
-				logger.warning(f"Stooq fetch failed for {symbol}: {ex}")
-				return pd.DataFrame()
+			# Try multiple symbol variants for Stooq (common: '.us' for US tickers)
+			candidates = []
+			base = symbol.lower()
+			candidates.append(base)
+			if not base.endswith('.us'):
+				candidates.append(base + '.us')
+			for cand in candidates:
+				try:
+					url = f"https://stooq.com/q/d/l/?s={cand}&i=d"
+					logger.info(f"/history: fetching from Stooq for {symbol} via {url}")
+					resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+					if resp.status_code != 200:
+						logger.warning(f"Stooq HTTP {resp.status_code} for {symbol} ({cand})")
+						continue
+					text = resp.text.strip()
+					if not text or text.lower().startswith("no data"):
+						continue
+					# Read CSV from text
+					from io import StringIO
+					df = pd.read_csv(StringIO(text), header=None)
+					# Stooq daily CSV is usually: Date,Open,High,Low,Close,Volume
+					if df.shape[1] >= 5:
+						cols = ["date", "open", "high", "low", "close"] + (["volume"] if df.shape[1] >= 6 else [])
+						df.columns = cols + [f"extra{i}" for i in range(df.shape[1]-len(cols))]
+						# Drop any extra columns beyond volume
+						df = df[cols]
+					else:
+						# Try default parser if shape unexpected
+						df = pd.read_csv(StringIO(text))
+					# Normalize columns and date range
+					df.columns = [str(c).strip().lower() for c in df.columns]
+					if "date" not in df.columns and "data" in df.columns:
+						df = df.rename(columns={"data": "date"})
+					df = normalize_ohlcv_df(df)
+					df = filter_date_range(df, s, e)
+					if df is not None and not df.empty:
+						return df
+				except Exception as ex:
+					logger.warning(f"Stooq fetch failed for {symbol} ({cand}): {ex}")
+					continue
+			return pd.DataFrame()
 
 		# Decide provider order
 		providers_env = os.getenv("PROVIDERS", "yahoo,stooq")

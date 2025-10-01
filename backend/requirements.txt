@@ -3,3 +3,4 @@ uvicorn[standard]==0.30.6
 yfinance==0.2.44
 pandas==2.2.2
 pydantic==2.9.2
+requests>=2.31.0
