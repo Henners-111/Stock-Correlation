@@ -8,9 +8,16 @@ function setStatus(msg) {
 }
 
 // Choose API base depending on environment
-const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+// (replaced by override-enabled version below)
+// Choose API base depending on environment
+// - Localhost → local FastAPI
+// - Otherwise → Render backend by default
+// You can override via URL: ?api=https://your-backend.example.com
+const urlApiOverride = new URLSearchParams(location.search).get('api');
+const defaultApiBase = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
 	? 'http://127.0.0.1:8000'
 	: 'https://stock-correlation.onrender.com';
+const API_BASE = urlApiOverride || defaultApiBase;
 
 async function fetchStock(ticker, start, end) {
 		const url = `${API_BASE}/history?ticker=${encodeURIComponent(ticker)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
