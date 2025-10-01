@@ -81,6 +81,8 @@ def get_history(ticker: str, start: str, end: str):
 				return sym
 			key = sym.strip().lower()
 			aliases = {
+				# Common typo for Stooq US interest rate index
+				"intrus.m": "INRTUS.M",
 				"us10y": "^TNX",  # 10Y Treasury yield index (approx x10)
 				"10y": "^TNX",
 				"^tnx": "^TNX",
@@ -185,7 +187,19 @@ def get_history(ticker: str, start: str, end: str):
 				s = pd.to_datetime(start_s)
 				e = pd.to_datetime(end_s)
 				if "date" in df.columns:
-					df["date"] = pd.to_datetime(df["date"], errors="coerce")
+					# Prefer explicit YYYY-MM-DD parsing when the strings match ISO format to avoid warnings
+					def _parse_dates(col: pd.Series) -> pd.Series:
+						try:
+							obj = col.astype(str)
+							# Check a small sample for ISO date pattern
+							sample = obj.dropna().head(10)
+							is_iso = sample.map(lambda x: len(x)==10 and x[4]=="-" and x[7]=="-" and x[:4].isdigit() and x[5:7].isdigit() and x[8:10].isdigit()).all()
+							if is_iso:
+								return pd.to_datetime(obj, format="%Y-%m-%d", errors="coerce")
+							return pd.to_datetime(obj, errors="coerce")
+						except Exception:
+							return pd.to_datetime(col, errors="coerce")
+					df["date"] = _parse_dates(df["date"])  # type: ignore
 					df = df[(df["date"] >= s) & (df["date"] <= e)]
 				return df
 			except Exception:
