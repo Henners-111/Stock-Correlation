@@ -10,7 +10,7 @@ function setStatus(msg) {
 // Choose API base depending on environment
 const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
 	? 'http://127.0.0.1:8000'
-	: 'https://api.stock.nethercot.uk';
+	: 'https://stock-correlation.onrender.com';
 
 async function fetchStock(ticker, start, end) {
 		const url = `${API_BASE}/history?ticker=${encodeURIComponent(ticker)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
