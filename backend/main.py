@@ -30,24 +30,20 @@ def healthz():
 _env_origins = os.getenv("ALLOW_ORIGINS")
 if _env_origins:
 	allow_origins = [o.strip() for o in _env_origins.split(",") if o.strip()]
+	# If wildcard present in env, collapse to "*"
+	if any(o == "*" for o in allow_origins):
+		allow_origins = ["*"]
 else:
-	# Sensible defaults for local dev and the provided production domain
-	allow_origins = [
-		"https://stock-correlation.onrender.com",
-		"https://stock.nethercot.uk",
-		"http://localhost",
-		"http://127.0.0.1",
-		"http://localhost:8000",
-		"http://127.0.0.1:8000",
-		"http://localhost:8080",
-		"http://127.0.0.1:8080",
-	]
+	# Default to permissive CORS to avoid cross-origin failures from static hosts
+	allow_origins = ["*"]
 
 app.add_middleware(
 	CORSMiddleware,
 	allow_origins=allow_origins,
 	allow_methods=["*"],
 	allow_headers=["*"],
+    allow_credentials=False,
+    max_age=86400,
 )
 
 
@@ -215,8 +211,8 @@ def get_history(ticker: str, start: str, end: str):
 					continue
 			return pd.DataFrame()
 
-		# Decide provider order
-		providers_env = os.getenv("PROVIDERS", "yahoo,stooq")
+		# Decide provider order (prefer Stooq by default to avoid Yahoo blocks on some hosts)
+		providers_env = os.getenv("PROVIDERS", "stooq,yahoo")
 		providers = [p.strip().lower() for p in providers_env.split(",") if p.strip()]
 		if not providers:
 			providers = ["yahoo", "stooq"]
