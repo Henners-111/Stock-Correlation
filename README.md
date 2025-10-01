@@ -58,11 +58,14 @@ See `SELF_HOSTING.md` for a fuller walkthrough of the NPM + Cloudflare flow.
 ## Configuration (env)
 - `ALLOW_ORIGINS`: comma-separated CORS origins (e.g., `https://stock.nethercot.uk,https://api.stock.nethercot.uk`).
 - `HOST`/`PORT`: backend bind host/port (default 0.0.0.0:8000).
+- `PROVIDERS`: comma-separated data providers in order of preference. Default `yahoo,stooq`. If Yahoo Finance blocks your server or rate-limits, set `stooq,yahoo`.
+- `LOG_LEVEL`: Python logging level (e.g., `INFO`, `DEBUG`).
 
 ## API
 - GET `/` → health JSON.
 - GET `/history?ticker=AAPL&start=2024-01-01&end=2024-03-01`
 	- Returns array of OHLCV with ISO date strings; cleans NaN/inf rows.
+	- Will try providers in order (`PROVIDERS`). Response may include `provider` (e.g., `"yahoo"` or `"stooq"`). On failure, returns `{ ticker, data: [], error }`.
 
 ## How it works (stats model)
 - Build daily log-returns for both series over the overlapping range.
