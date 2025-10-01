@@ -35,6 +35,14 @@
 		.stat { background:#0c1424; border:1px solid #253555; border-radius:12px; padding:12px; }
 		.stat .label { font-size:12px; color:var(--muted); }
 		.stat .value { font-size:18px; font-weight:700; margin-top:6px; }
+		/* Compact stats layout for tighter, wider boxes (used bottom-right) */
+		.stats.stats-compact { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+		.stats.stats-compact .stat { padding:10px; }
+		.stats.stats-compact .stat .label { font-size:11px; }
+		.stats.stats-compact .stat .value { font-size:16px; white-space: nowrap; }
+		@media (max-width: 700px){
+			.stats.stats-compact { grid-template-columns: 1fr; }
+		}
 		.status { margin-top:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; color:#c7d2e6; }
 		.status.error { color: var(--bad); }
 		.grid-1 { display:grid; grid-template-columns: 1fr; gap:16px; }
@@ -168,7 +176,7 @@
 			<div class="card">
 				<div class="grid-1">
 					<div id="mc" class="chart"></div>
-					<div class="stats">
+					<div class="stats stats-compact">
 						<div class="stat"><div class="label">Expected B (shock)</div><div id="s-expB" class="value">-</div></div>
 						<div class="stat"><div class="label">MC p5 / p50 / p95</div><div id="s-quant" class="value">-</div></div>
 						<div class="stat"><div class="label">Samples</div><div id="s-samples" class="value">-</div></div>
