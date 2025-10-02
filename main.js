@@ -45,6 +45,46 @@ async function resolveApiBase(){
 	return RESOLVED_API_BASE;
 }
 
+// --- Typeahead: ticker search suggestions ---
+let typeaheadTimerA = null;
+let typeaheadTimerB = null;
+const DEBOUNCE_MS = 200;
+async function fetchSuggestions(q){
+	if(!q || q.trim().length < 1) return [];
+	const base = await resolveApiBase();
+	const url = `${base}/symbols/search?q=${encodeURIComponent(q)}&limit=10`;
+	try{
+		const res = await fetch(url, { mode: 'cors', cache: 'no-store' });
+		if(!res.ok) return [];
+		const json = await res.json();
+		if(!json || !Array.isArray(json.results)) return [];
+		return json.results;
+	}catch{ return []; }
+}
+function wireTypeahead(inputId, listId){
+	const inp = $(inputId);
+	const dl = $(listId);
+	if(!inp || !dl) return;
+	let timer = null;
+	const setTimer = (t)=>{ timer = t; };
+	const getTimer = ()=> timer;
+	inp.addEventListener('input', async () => {
+		const q = inp.value;
+		if(getTimer()) clearTimeout(getTimer());
+		setTimer(setTimeout(async () => {
+			const results = await fetchSuggestions(q);
+			// Populate datalist: show "SYMBOL — Name"
+			dl.innerHTML = '';
+			for(const r of results){
+				const opt = document.createElement('option');
+				opt.value = r.symbol || '';
+				opt.label = r.name ? `${r.symbol} — ${r.name}` : r.symbol;
+				dl.appendChild(opt);
+			}
+		}, DEBOUNCE_MS));
+	});
+}
+
 async function fetchStock(ticker, start, end) {
 		const base = await resolveApiBase();
 		const url = `${base}/history?ticker=${encodeURIComponent(ticker)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
@@ -162,7 +202,13 @@ setStatus(`Fetched ${tickerA}: ${tsA.length} | ${tickerB}: ${tsB.length} | overl
 const {a,b} = alignByDates(tsA,tsB);
 if (a.length < 2 || b.length < 2) throw new Error(`Not enough overlapping data (overlap=${overlapCount})`);
 const RA = buildReturns(a); const RB = buildReturns(b);
-const rA = RA.returns; const rB = RB.returns;
+let rA = RA.returns; let rB = RB.returns;
+// Use rolling window to define MC estimation sample and horizon
+const horizon = Math.max(20, windowSize); // MC steps ~window
+if (rA.length > windowSize && rB.length > windowSize){
+	rA = rA.slice(-windowSize);
+	rB = rB.slice(-windowSize);
+}
 if (rA.length < 2 || rB.length < 2) throw new Error('Not enough return points');
 
 
@@ -189,9 +235,9 @@ const rho = Math.max(-0.999, Math.min(0.999, covAB_ / (Math.sqrt(varA_) * Math.s
 const sigA = Math.sqrt(Math.max(1e-12, varA_));
 const sigB = Math.sqrt(Math.max(1e-12, varB_));
 const S0B = b[b.length-1].close;
-const steps = 252; // ~1 trading year
+let steps = horizon; // tie horizon to rolling window
 const nPaths = 200;
-const shockStep = Math.floor(steps/4); // quarter into the horizon
+let shockStep = Math.floor(steps/4); // quarter into the horizon
 // conditional mean shift to B for a shock to A of size `shock`
 const kappa = (varA_ > 1e-12) ? (covAB_ / varA_) : 0;
 const postShockVolScale = 1.2; // widen uncertainty after shock
@@ -286,6 +332,10 @@ if (document.readyState === 'loading') {
 			checkClickability();
 			window.addEventListener('resize', checkClickability);
 		} catch {}
+
+		// Wire typeahead for ticker inputs
+		wireTypeahead('tickerA','tickerA-list');
+		wireTypeahead('tickerB','tickerB-list');
 	});
 } else {
 	const btn = $('run');
@@ -302,4 +352,8 @@ if (document.readyState === 'loading') {
 			}
 		}
 	} catch {}
+
+	// Wire typeahead if DOM already loaded
+	wireTypeahead('tickerA','tickerA-list');
+	wireTypeahead('tickerB','tickerB-list');
 }

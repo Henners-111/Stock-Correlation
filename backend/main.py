@@ -12,6 +12,7 @@ import logging
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import re
 
 
 app = FastAPI()
@@ -68,8 +69,55 @@ def root():
 		"status": "ok",
 		"endpoints": [
 			"/history?ticker=AAPL&start=2024-01-01&end=2024-03-01",
+			"/symbols/search?q=AAPL",
 		],
 	}
+
+
+@app.get("/symbols/search")
+def symbols_search(q: str, limit: int = 10):
+	"""Return stock/ETF symbol suggestions using Stooq's search page.
+	Only returns common equity/ETF tickers (filters out FX/crypto).
+	"""
+	q = (q or "").strip()
+	if not q or len(q) < 1:
+		return {"q": q, "results": []}
+	url = f"https://stooq.com/t/?s={requests.utils.quote(q)}"
+	try:
+		resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+		if resp.status_code != 200:
+			return {"q": q, "results": []}
+		html = resp.text
+		# Extract rows like: <a href="/q/?s=aapl.us">AAPL.US</a> Apple Inc ... EXCH
+		# We'll find all /q/?s=SYMBOL links then grab nearby text for the name.
+		results = []
+		seen = set()
+		for m in re.finditer(r"/q/\?s=([a-z0-9_.:-]+)", html, flags=re.I):
+			sym = m.group(1).upper()
+			if sym in seen:
+				continue
+			# Heuristic filters: prefer stocks/ETFs (exclude FX, CRYPTO, FUT)
+			# Stooq stocks often have suffixes like .US, .UK, .DE, .PL, etc.
+			if any(sym.endswith(f".{ex}") for ex in ("US","UK","DE","FR","PL","JP","CA","AU","NL","IT","ES","CH")) or re.fullmatch(r"[A-Z]{1,5}(?:\.[A-Z]{2})?", sym):
+				# Extract name by taking text after the link on the same line
+				start = m.end()
+				endline = html.find("\n", start)
+				snippet = html[start:endline if endline!=-1 else start+200]
+				# Clean name: strip tags and extra spaces
+				name = re.sub(r"<[^>]*>", " ", snippet)
+				name = re.sub(r"\s+", " ", name).strip(" -|•:\u00a0")
+				# Basic exclude of crypto/forex labels
+				name_lower = name.lower()
+				if any(k in name_lower for k in ("crypto", "cryptocurrency", "forex", "fx", "currency")):
+					continue
+				results.append({"symbol": sym, "name": name})
+				seen.add(sym)
+				if len(results) >= max(1, min(50, limit)):
+					break
+		return {"q": q, "results": results}
+	except Exception as ex:
+		logger.warning(f"symbols_search failed for {q}: {ex}")
+		return {"q": q, "results": []}
 
 
 @app.get("/history")
