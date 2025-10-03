@@ -18,6 +18,136 @@ candidates.push('https://api.stock.nethercot.uk');
 if (isLocalHost) candidates.push('http://127.0.0.1:8000');
 
 let RESOLVED_API_BASE = sessionStorage.getItem('API_BASE') || '';
+const suggestionCache = new Map();
+const AUTOCOMPLETE_CFG = { minChars: 1, limit: 12, debounceMs: 180, cacheTtlMs: 90_000 };
+// Allow all exchange categories (stocks, commodities, rates, crypto); leave list empty unless a noisy exchange needs suppressing.
+const AUTOCOMPLETE_IGNORE_EXCHANGES = [];
+const htmlEscapes = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(str=''){ return String(str).replace(/[&<>"']/g, ch => htmlEscapes[ch] || ch); }
+function formatPrice(val){ if (val == null || Number.isNaN(val)) return ''; const abs = Math.abs(val); return abs >= 100 ? Number(val).toFixed(2) : Number(val).toFixed(3); }
+function formatChangePct(chg){ if (chg == null || Number.isNaN(chg)) return ''; const sign = chg > 0 ? '+' : ''; return `${sign}${chg.toFixed(2)}%`; }
+function cacheSuggestions(query, items){ if (!query) return; suggestionCache.set(query.toLowerCase(), { ts: Date.now(), items }); }
+function getCachedSuggestions(query){ if (!query) return null; const cached = suggestionCache.get(query.toLowerCase()); if (!cached) return null; if (Date.now() - cached.ts > AUTOCOMPLETE_CFG.cacheTtlMs){ suggestionCache.delete(query.toLowerCase()); return null; } return cached.items; }
+async function fetchSuggestions(query, signal){
+	if (!query || query.length < AUTOCOMPLETE_CFG.minChars) return [];
+	const cached = getCachedSuggestions(query);
+	if (cached) return cached;
+	try{
+		const base = await resolveApiBase();
+		const url = `${base}/suggest?q=${encodeURIComponent(query)}&limit=${AUTOCOMPLETE_CFG.limit}`;
+		const res = await fetch(url, { mode: 'cors', cache: 'no-store', signal });
+		if(!res.ok) throw new Error(`Suggest error ${res.status}`);
+		const json = await res.json();
+		const items = json && Array.isArray(json.data) ? json.data : [];
+		cacheSuggestions(query, items);
+		return items;
+	}catch(err){
+		console.warn('Autocomplete fetch failed', err);
+		return [];
+	}
+}
+function attachAutocomplete(inputId){
+	const input = $(inputId);
+	if (!input) return;
+	const control = input.closest('.control');
+	if (!control) return;
+	if (control.querySelector('.autocomplete-list')) return;
+	control.classList.add('autocomplete');
+	input.setAttribute('autocomplete', 'off');
+	const list = document.createElement('div');
+	list.className = 'autocomplete-list hidden';
+	control.appendChild(list);
+	const state = { input, list, items: [], highlight: -1, debounce: null, controller: null, lastQuery: '' };
+	function hideList(){ list.classList.add('hidden'); state.highlight = -1; }
+	function ensureVisible(idx){ const child = list.children[idx]; if(!child) return; const cRect = child.getBoundingClientRect(); const lRect = list.getBoundingClientRect(); if (cRect.top < lRect.top){ list.scrollTop -= (lRect.top - cRect.top) + 6; } else if (cRect.bottom > lRect.bottom){ list.scrollTop += (cRect.bottom - lRect.bottom) + 6; } }
+	function updateHighlight(){ Array.from(list.children).forEach((el, idx)=>{ if(!el.classList) return; if(state.highlight === idx){ el.classList.add('active'); } else { el.classList.remove('active'); } }); if(state.highlight >=0) ensureVisible(state.highlight); }
+	function render(){
+		list.innerHTML='';
+		if(!state.items.length){
+			const empty=document.createElement('div');
+			empty.className='autocomplete-empty';
+			empty.textContent=state.lastQuery.length >= AUTOCOMPLETE_CFG.minChars ? 'No matches' : 'Type to search';
+			list.appendChild(empty);
+			list.classList.remove('hidden');
+			return;
+		}
+		state.items.forEach((item, idx)=>{
+			const row=document.createElement('div');
+			row.className='autocomplete-item';
+			row.dataset.index=String(idx);
+			row.dataset.symbol=item.symbol || '';
+			const changeValue = (item && Object.prototype.hasOwnProperty.call(item, 'change_percent')) ? item.change_percent : null;
+			const changeClass=changeValue == null ? '' : (changeValue >= 0 ? 'positive' : 'negative');
+			const changeText=formatChangePct(changeValue);
+			const aliasBadge = (item && item.alias_of && item.alias_of !== item.symbol)
+				? `<span class="autocomplete-alias">(${escapeHtml(item.alias_of)})</span>`
+				: '';
+			row.innerHTML=`<div class="autocomplete-symbol">${escapeHtml(item.symbol || '')}${aliasBadge}</div>
+				<div class="autocomplete-name">${escapeHtml(item.name || '')}</div>
+				<div class="autocomplete-meta">
+					${item.exchange ? `<span class="autocomplete-exchange">${escapeHtml(item.exchange)}</span>` : ''}
+					${item.last != null ? `<span class="autocomplete-price">${escapeHtml(formatPrice(item.last))}</span>` : ''}
+					${changeText ? `<span class="autocomplete-change ${changeClass}">${escapeHtml(changeText)}</span>` : ''}
+				</div>`;
+			row.addEventListener('mousedown', evt => { evt.preventDefault(); select(idx); });
+			list.appendChild(row);
+		});
+		list.classList.remove('hidden');
+		state.highlight = state.items.length ? Math.min(state.highlight, state.items.length-1) : -1;
+		updateHighlight();
+	}
+	function select(idx){ const item = state.items[idx]; if(!item) return; input.value = item.symbol || input.value; input.dispatchEvent(new Event('change', { bubbles: true })); hideList(); }
+	async function load(query){
+		state.lastQuery = query;
+		if(state.controller) state.controller.abort();
+		if(!query || query.length < AUTOCOMPLETE_CFG.minChars){ state.items = []; render(); return; }
+		const controller = new AbortController();
+		state.controller = controller;
+		const items = await fetchSuggestions(query, controller.signal);
+		if(controller.signal.aborted) return;
+		state.controller = null;
+		const filtered = AUTOCOMPLETE_IGNORE_EXCHANGES.length
+			? items.filter(item => {
+				const exch = ((item && item.exchange) || '').toLowerCase();
+				return !AUTOCOMPLETE_IGNORE_EXCHANGES.some(keyword => exch.includes(keyword));
+			})
+			: items;
+		state.items = filtered.slice(0, AUTOCOMPLETE_CFG.limit);
+		state.highlight = state.items.length ? 0 : -1;
+		render();
+	}
+	function schedule(query){ if(state.debounce) clearTimeout(state.debounce); state.debounce = setTimeout(()=>load(query), AUTOCOMPLETE_CFG.debounceMs); }
+	input.addEventListener('input', ()=>{ const query = input.value.trim(); schedule(query); });
+	input.addEventListener('focus', ()=>{
+		if(state.items.length){ list.classList.remove('hidden'); updateHighlight(); }
+		else if(input.value.trim().length >= AUTOCOMPLETE_CFG.minChars){ schedule(input.value.trim()); }
+	});
+	input.addEventListener('keydown', evt => {
+		if (!state.items.length && evt.key !== 'Escape') return;
+		switch(evt.key){
+			case 'ArrowDown':
+				evt.preventDefault();
+				if(!state.items.length) return;
+				list.classList.remove('hidden');
+				state.highlight = (state.highlight + 1 + state.items.length) % state.items.length;
+				updateHighlight();
+				break;
+			case 'ArrowUp':
+				evt.preventDefault();
+				if(!state.items.length) return;
+				list.classList.remove('hidden');
+				state.highlight = (state.highlight - 1 + state.items.length) % state.items.length;
+				updateHighlight();
+				break;
+			case 'Enter': if(state.highlight >=0){ evt.preventDefault(); select(state.highlight); } break;
+			case 'Tab': if(state.highlight >=0){ select(state.highlight); } break;
+			case 'Escape': hideList(); break;
+		}
+	});
+	document.addEventListener('click', evt => { if(!control.contains(evt.target)) hideList(); });
+	control.addEventListener('focusout', evt => { if(!control.contains(evt.relatedTarget)){ setTimeout(hideList, 120); } });
+}
+
 async function probeApi(base, timeoutMs=3000){
 	try{
 		const ctrl = new AbortController();
@@ -43,46 +173,6 @@ async function resolveApiBase(){
 	RESOLVED_API_BASE = candidates[0];
 	sessionStorage.setItem('API_BASE', RESOLVED_API_BASE);
 	return RESOLVED_API_BASE;
-}
-
-// --- Typeahead: ticker search suggestions ---
-let typeaheadTimerA = null;
-let typeaheadTimerB = null;
-const DEBOUNCE_MS = 200;
-async function fetchSuggestions(q){
-	if(!q || q.trim().length < 1) return [];
-	const base = await resolveApiBase();
-	const url = `${base}/symbols/search?q=${encodeURIComponent(q)}&limit=10`;
-	try{
-		const res = await fetch(url, { mode: 'cors', cache: 'no-store' });
-		if(!res.ok) return [];
-		const json = await res.json();
-		if(!json || !Array.isArray(json.results)) return [];
-		return json.results;
-	}catch{ return []; }
-}
-function wireTypeahead(inputId, listId){
-	const inp = $(inputId);
-	const dl = $(listId);
-	if(!inp || !dl) return;
-	let timer = null;
-	const setTimer = (t)=>{ timer = t; };
-	const getTimer = ()=> timer;
-	inp.addEventListener('input', async () => {
-		const q = inp.value;
-		if(getTimer()) clearTimeout(getTimer());
-		setTimer(setTimeout(async () => {
-			const results = await fetchSuggestions(q);
-			// Populate datalist: show "SYMBOL — Name"
-			dl.innerHTML = '';
-			for(const r of results){
-				const opt = document.createElement('option');
-				opt.value = r.symbol || '';
-				opt.label = r.name ? `${r.symbol} — ${r.name}` : r.symbol;
-				dl.appendChild(opt);
-			}
-		}, DEBOUNCE_MS));
-	});
 }
 
 async function fetchStock(ticker, start, end) {
@@ -202,13 +292,7 @@ setStatus(`Fetched ${tickerA}: ${tsA.length} | ${tickerB}: ${tsB.length} | overl
 const {a,b} = alignByDates(tsA,tsB);
 if (a.length < 2 || b.length < 2) throw new Error(`Not enough overlapping data (overlap=${overlapCount})`);
 const RA = buildReturns(a); const RB = buildReturns(b);
-let rA = RA.returns; let rB = RB.returns;
-// Use rolling window to define MC estimation sample and horizon
-const horizon = Math.max(20, windowSize); // MC steps ~window
-if (rA.length > windowSize && rB.length > windowSize){
-	rA = rA.slice(-windowSize);
-	rB = rB.slice(-windowSize);
-}
+const rA = RA.returns; const rB = RB.returns;
 if (rA.length < 2 || rB.length < 2) throw new Error('Not enough return points');
 
 
@@ -235,9 +319,9 @@ const rho = Math.max(-0.999, Math.min(0.999, covAB_ / (Math.sqrt(varA_) * Math.s
 const sigA = Math.sqrt(Math.max(1e-12, varA_));
 const sigB = Math.sqrt(Math.max(1e-12, varB_));
 const S0B = b[b.length-1].close;
-let steps = horizon; // tie horizon to rolling window
+const steps = Math.max(5, windowSize); // align MC horizon with rolling window length
 const nPaths = 200;
-let shockStep = Math.floor(steps/4); // quarter into the horizon
+const shockStep = Math.max(1, Math.floor(steps/4)); // quarter into the horizon (at least first step)
 // conditional mean shift to B for a shock to A of size `shock`
 const kappa = (varA_ > 1e-12) ? (covAB_ / varA_) : 0;
 const postShockVolScale = 1.2; // widen uncertainty after shock
@@ -299,7 +383,7 @@ const redPath = simulateBPathsGBM(S0B, muA, muB, sigA, sigB, rho, steps, 1, shoc
 traces.push({ x:xIdx, y:redPath, mode:'lines', name:'Shocked path', line:{color:'#ff5252', width:2}, opacity:0.95, showlegend:true });
 Plotly.newPlot('mc', traces, {
 	title: `Monte Carlo ${tickerB} price paths (shock to ${tickerA} at t=${shockStep})`,
-	xaxis: { title: 'Time (days)' },
+	xaxis: { title: 'Time (days)', range: [0, steps] },
 	yaxis: { title: `${tickerB} Price` },
 	plot_bgcolor:'#0c1424', paper_bgcolor:'#121a2b', font:{color:'#e6edf7'}
 });
@@ -316,6 +400,8 @@ if (document.readyState === 'loading') {
 	document.addEventListener('DOMContentLoaded', () => {
 		const btn = $('run');
 		if (btn) btn.addEventListener('click', run);
+		attachAutocomplete('tickerA');
+		attachAutocomplete('tickerB');
 		// Diagnose potential overlay blocking clicks
 		try {
 			const checkClickability = () => {
@@ -332,14 +418,12 @@ if (document.readyState === 'loading') {
 			checkClickability();
 			window.addEventListener('resize', checkClickability);
 		} catch {}
-
-		// Wire typeahead for ticker inputs
-		wireTypeahead('tickerA','tickerA-list');
-		wireTypeahead('tickerB','tickerB-list');
 	});
 } else {
 	const btn = $('run');
 	if (btn) btn.addEventListener('click', run);
+	attachAutocomplete('tickerA');
+	attachAutocomplete('tickerB');
 	try {
 		const b = $('run');
 		if (b) {
@@ -352,8 +436,4 @@ if (document.readyState === 'loading') {
 			}
 		}
 	} catch {}
-
-	// Wire typeahead if DOM already loaded
-	wireTypeahead('tickerA','tickerA-list');
-	wireTypeahead('tickerB','tickerB-list');
 }

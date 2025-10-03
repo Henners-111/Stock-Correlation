@@ -1,5 +1,5 @@
 # backend/main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 import yfinance as yf
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
@@ -12,7 +12,9 @@ import logging
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import html
 import re
+import time
 
 
 app = FastAPI()
@@ -62,6 +64,330 @@ class HistoryResponse(BaseModel):
 	data: List[OHLCV]
 
 
+class Suggestion(BaseModel):
+	symbol: str
+	name: str
+	exchange: Optional[str] = None
+	last: Optional[float] = None
+	change_percent: Optional[float] = None
+	alias_of: Optional[str] = None
+
+
+SUGGESTION_CACHE_TTL = int(os.getenv("SUGGESTION_CACHE_TTL", "300"))
+_suggestion_cache: dict[tuple[str, int], tuple[float, List[dict]]] = {}
+_suggestion_session = requests.Session()
+_suggestion_session.headers.update({
+	"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+	"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+	"Accept-Language": "en-US,en;q=0.8",
+	"Connection": "keep-alive",
+	"Referer": "https://stooq.com/",
+})
+_suggestion_session.mount("https://", HTTPAdapter(max_retries=Retry(total=2, backoff_factor=0.4, status_forcelist=[429, 500, 502, 503, 504])))
+
+_yahoo_suggestion_session = requests.Session()
+_yahoo_suggestion_session.headers.update({
+	"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+	"Accept": "application/json",
+	"Accept-Language": "en-US,en;q=0.9",
+	"Connection": "keep-alive",
+	"Referer": "https://finance.yahoo.com/",
+})
+_yahoo_suggestion_session.mount("https://", HTTPAdapter(max_retries=Retry(total=2, backoff_factor=0.4, status_forcelist=[429, 500, 502, 503, 504])))
+
+_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.I | re.S)
+_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.I | re.S)
+_TAG_RE = re.compile(r"<.*?>", re.S)
+_EXCLUDE_EXCH: tuple[str, ...] = ()
+_YAHOO_ALLOWED_TYPES = {
+	"EQUITY",
+	"ETF",
+	"INDEX",
+	"MUTUALFUND",
+	"FUND",
+	"FUTURE",
+	"CRYPTOCURRENCY",
+	"CURRENCY",
+	"BOND",
+}
+_SUGGESTION_SYMBOL_REMAPS = {
+	"BTC-USD": "BTC.V",
+	"BTCUSD": "BTC.V",
+	"BTC=F": "BTC.V",
+	"XAUUSD=X": "XAUUSD",
+	"GC=F": "XAUUSD",
+	"US10Y": "INRTUS.M",
+	"^TNX": "INRTUS.M",
+}
+
+
+
+def _strip_html(text: str) -> str:
+	if not text:
+		return ""
+	clean = _TAG_RE.sub("", text)
+	clean = html.unescape(clean)
+	return clean.replace("\xa0", " ").strip()
+
+
+def _parse_float(text: str) -> Optional[float]:
+	clean = _strip_html(text)
+	if not clean:
+		return None
+	clean = clean.replace(" ", "").replace(",", "")
+	try:
+		return float(clean)
+	except (ValueError, TypeError):
+		return None
+
+
+def _parse_change_percent(text: str) -> Optional[float]:
+	clean = _strip_html(text)
+	if not clean:
+		return None
+	value = clean.replace(" ", "").replace(",", "")
+	mult = 1.0
+	if value.startswith("-"):
+		mult = -1.0
+	value = value.lstrip("+-")
+	if value.endswith("%"):
+		value = value[:-1]
+	try:
+		return float(value) * mult
+	except (ValueError, TypeError):
+		return None
+
+
+def _remap_suggestion_symbol(symbol: str, quote: Optional[dict]) -> tuple[str, Optional[str]]:
+	original = symbol or ""
+	upper = original.upper()
+	if upper in _SUGGESTION_SYMBOL_REMAPS:
+		return _SUGGESTION_SYMBOL_REMAPS[upper], original
+	info = quote or {}
+	quote_type = (info.get("quoteType") or "").upper()
+	if quote_type == "CRYPTOCURRENCY":
+		if "-" in upper:
+			base = upper.split("-")[0]
+			if base and base.isalpha():
+				return f"{base}.V", original
+		if upper.endswith("=F"):
+			base = upper[:-2]
+			if base and base.isalpha():
+				return f"{base}.V", original
+	if quote_type == "CURRENCY" and upper.endswith("=X"):
+		if upper == "XAUUSD=X":
+			return "XAUUSD", original
+	if quote_type == "INDEX" and upper.startswith("^"):
+		if upper == "^TNX":
+			return "INRTUS.M", original
+	return original, None
+
+
+def _compute_popularity_score(quote: dict, order: int) -> float:
+	try:
+		score_val = float(quote.get("score") or 0.0)
+	except (TypeError, ValueError):
+		score_val = 0.0
+	qtype = (quote.get("quoteType") or "").upper()
+	type_bonus = {
+		"EQUITY": 500.0,
+		"ETF": 350.0,
+		"INDEX": 300.0,
+		"CRYPTOCURRENCY": 280.0,
+		"FUTURE": 260.0,
+		"CURRENCY": 240.0,
+		"MUTUALFUND": 200.0,
+		"FUND": 180.0,
+		"BOND": 150.0,
+	}
+	score_val += type_bonus.get(qtype, 120.0)
+	score_val -= order * 0.01
+	return score_val
+
+
+def _fetch_stooq_html(query: str) -> str:
+	if not query:
+		return ""
+	params = {"q": query}
+	last_text = ""
+	for _ in range(2):
+		resp = _suggestion_session.get("https://stooq.com/db/l/", params=params, timeout=6)
+		if resp.status_code >= 500:
+			time.sleep(0.2)
+			continue
+		if resp.status_code >= 400:
+			raise HTTPException(status_code=502, detail=f"Stooq responded with {resp.status_code}")
+		text = resp.text or ""
+		if text.strip():
+			return text
+		last_text = text
+	return last_text
+
+
+def _parse_stooq_rows(raw_html: str) -> List[dict]:
+	if not raw_html:
+		return []
+	results: List[dict] = []
+	for row_html in _ROW_RE.findall(raw_html):
+		cells = _CELL_RE.findall(row_html)
+		if len(cells) < 3:
+			continue
+		symbol_match = re.search(r">([^<]+)<", cells[0], re.S)
+		symbol = _strip_html(symbol_match.group(1) if symbol_match else cells[0])
+		name = _strip_html(cells[1])
+		exchange = _strip_html(cells[2]) if len(cells) > 2 else ""
+		if not symbol or not name:
+			continue
+		if exchange and any(token in exchange.lower() for token in _EXCLUDE_EXCH):
+			continue
+		entry = {
+			"symbol": symbol.upper(),
+			"name": name,
+			"exchange": exchange or None,
+			"last": _parse_float(cells[3]) if len(cells) > 3 else None,
+			"change_percent": _parse_change_percent(cells[4]) if len(cells) > 4 else None,
+		}
+		results.append(entry)
+	return results
+
+
+def _fetch_yahoo_suggestions(query: str, limit: int) -> List[dict]:
+	if not query:
+		return []
+	params = {
+		"q": query,
+		"quotesCount": max(limit * 2, 10),
+		"newsCount": 0,
+		"listsCount": 0,
+		"enableFuzzyQuery": "false",
+		"lang": "en-US",
+		"region": "US",
+		"quotesQueryId": "tss_match_phrase_query",
+		"multiQuoteQueryId": "multi_quote_single_token",
+	}
+	resp = _yahoo_suggestion_session.get("https://query2.finance.yahoo.com/v1/finance/search", params=params, timeout=6)
+	if resp.status_code >= 500:
+		raise HTTPException(status_code=502, detail="Yahoo suggest unavailable")
+	if resp.status_code >= 400:
+		raise HTTPException(status_code=resp.status_code, detail="Yahoo suggest error")
+	payload = resp.json() if resp.content else {}
+	quotes = payload.get("quotes") or []
+	seen: set[str] = set()
+	results: List[dict] = []
+	for order, quote in enumerate(quotes):
+		raw_symbol = (quote.get("symbol") or "").strip()
+		if not raw_symbol:
+			continue
+		preferred_symbol, alias_symbol = _remap_suggestion_symbol(raw_symbol, quote)
+		symbol = preferred_symbol.upper()
+		if not symbol or symbol in seen:
+			continue
+		qtype = (quote.get("quoteType") or "").upper()
+		if qtype and _YAHOO_ALLOWED_TYPES and qtype not in _YAHOO_ALLOWED_TYPES:
+			continue
+		name = quote.get("shortname") or quote.get("longname") or quote.get("name") or symbol
+		exchange = quote.get("exchDisp") or quote.get("fullExchangeName")
+		last = quote.get("regularMarketPrice")
+		change_pct = quote.get("regularMarketChangePercent")
+		try:
+			last_val = float(last)
+		except (TypeError, ValueError):
+			last_val = None
+		try:
+			chg_val = float(change_pct)
+		except (TypeError, ValueError):
+			chg_val = None
+		item = {
+			"symbol": symbol,
+			"name": name,
+			"exchange": exchange,
+			"last": last_val,
+			"change_percent": chg_val,
+		}
+		if alias_symbol and alias_symbol.upper() != symbol:
+			item["alias_of"] = alias_symbol.upper()
+		item["_score"] = _compute_popularity_score(quote, order)
+		results.append(item)
+		seen.add(symbol)
+		if len(results) >= limit:
+			break
+	return results
+
+
+def _fetch_stooq_suggestions(query: str, limit: int) -> List[dict]:
+	base = query.strip()
+	upper = base.upper()
+	terms: List[str] = []
+	for candidate in (base, upper):
+		if candidate and candidate not in terms:
+			terms.append(candidate)
+	if upper and '.' not in upper and len(upper) <= 5:
+		fallback = f"{upper}.US"
+		if fallback not in terms:
+			terms.append(fallback)
+	seen = set()
+	output: List[dict] = []
+	for term in terms:
+		if not term:
+			continue
+		try:
+			html_text = _fetch_stooq_html(term)
+		except HTTPException:
+			raise
+		except Exception as exc:
+			logger.warning("Suggest fetch failed for %s: %s", term, exc)
+			continue
+		for item in _parse_stooq_rows(html_text):
+			symbol = item.get("symbol")
+			if not symbol or symbol in seen:
+				continue
+			seen.add(symbol)
+			output.append(item)
+			if len(output) >= limit:
+				return output
+	return output
+
+
+def fetch_suggestions(query: str, limit: int) -> List[dict]:
+	merged: dict[str, dict] = {}
+	try:
+		yahoo_results = _fetch_yahoo_suggestions(query, limit)
+	except HTTPException:
+		raise
+	except Exception as exc:
+		logger.warning("Yahoo suggestion fetch failed for %s: %s", query, exc)
+	else:
+		for item in yahoo_results:
+			sym = (item.get("symbol") or "").upper()
+			if not sym:
+				continue
+			item["symbol"] = sym
+			merged[sym] = item
+	try:
+		stooq_results = _fetch_stooq_suggestions(query, limit)
+	except HTTPException:
+		raise
+	except Exception as exc:
+		logger.warning("Stooq suggestion fetch failed for %s: %s", query, exc)
+	else:
+		for item in stooq_results:
+			sym = (item.get("symbol") or "").upper()
+			if not sym or sym in merged:
+				continue
+			entry = dict(item)
+			entry["symbol"] = sym
+			entry["_score"] = -1.0
+			merged[sym] = entry
+	ordered = sorted(merged.values(), key=lambda x: x.get("_score", 0.0), reverse=True)
+	out: List[dict] = []
+	for item in ordered:
+		item.pop("_score", None)
+		out.append(item)
+		if len(out) >= limit:
+			break
+	return out
+
+
 @app.get("/")
 def root():
 	return {
@@ -69,55 +395,8 @@ def root():
 		"status": "ok",
 		"endpoints": [
 			"/history?ticker=AAPL&start=2024-01-01&end=2024-03-01",
-			"/symbols/search?q=AAPL",
 		],
 	}
-
-
-@app.get("/symbols/search")
-def symbols_search(q: str, limit: int = 10):
-	"""Return stock/ETF symbol suggestions using Stooq's search page.
-	Only returns common equity/ETF tickers (filters out FX/crypto).
-	"""
-	q = (q or "").strip()
-	if not q or len(q) < 1:
-		return {"q": q, "results": []}
-	url = f"https://stooq.com/t/?s={requests.utils.quote(q)}"
-	try:
-		resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-		if resp.status_code != 200:
-			return {"q": q, "results": []}
-		html = resp.text
-		# Extract rows like: <a href="/q/?s=aapl.us">AAPL.US</a> Apple Inc ... EXCH
-		# We'll find all /q/?s=SYMBOL links then grab nearby text for the name.
-		results = []
-		seen = set()
-		for m in re.finditer(r"/q/\?s=([a-z0-9_.:-]+)", html, flags=re.I):
-			sym = m.group(1).upper()
-			if sym in seen:
-				continue
-			# Heuristic filters: prefer stocks/ETFs (exclude FX, CRYPTO, FUT)
-			# Stooq stocks often have suffixes like .US, .UK, .DE, .PL, etc.
-			if any(sym.endswith(f".{ex}") for ex in ("US","UK","DE","FR","PL","JP","CA","AU","NL","IT","ES","CH")) or re.fullmatch(r"[A-Z]{1,5}(?:\.[A-Z]{2})?", sym):
-				# Extract name by taking text after the link on the same line
-				start = m.end()
-				endline = html.find("\n", start)
-				snippet = html[start:endline if endline!=-1 else start+200]
-				# Clean name: strip tags and extra spaces
-				name = re.sub(r"<[^>]*>", " ", snippet)
-				name = re.sub(r"\s+", " ", name).strip(" -|•:\u00a0")
-				# Basic exclude of crypto/forex labels
-				name_lower = name.lower()
-				if any(k in name_lower for k in ("crypto", "cryptocurrency", "forex", "fx", "currency")):
-					continue
-				results.append({"symbol": sym, "name": name})
-				seen.add(sym)
-				if len(results) >= max(1, min(50, limit)):
-					break
-		return {"q": q, "results": results}
-	except Exception as ex:
-		logger.warning(f"symbols_search failed for {q}: {ex}")
-		return {"q": q, "results": []}
 
 
 @app.get("/history")
@@ -416,6 +695,25 @@ def get_history(ticker: str, start: str, end: str):
 		# Do not leak internal error as 500; return structured message
 		logger.exception(f"/history failed for {ticker}: {e}")
 		return {"ticker": orig_ticker if 'orig_ticker' in locals() else ticker, "data": [], "error": str(e)}
+
+
+@app.get("/suggest")
+def suggest(q: str = Query(..., min_length=1, max_length=24), limit: int = Query(12, ge=1, le=40)):
+	key = (q.lower(), limit)
+	now = time.time()
+	cached = _suggestion_cache.get(key)
+	if cached and now - cached[0] < SUGGESTION_CACHE_TTL:
+		return {"query": q, "data": cached[1], "cached": True}
+	try:
+		items = fetch_suggestions(q, limit)
+	except HTTPException:
+		raise
+	except Exception as exc:
+		logger.warning("Suggestion lookup failed for %s: %s", q, exc)
+		raise HTTPException(status_code=502, detail="Suggestion lookup failed")
+	validated = [Suggestion(**item).dict() for item in items]
+	_suggestion_cache[key] = (now, validated)
+	return {"query": q, "data": validated}
 
 
 if __name__ == "__main__":

@@ -66,6 +66,11 @@ See `SELF_HOSTING.md` for a fuller walkthrough of the NPM + Cloudflare flow.
 - GET `/history?ticker=AAPL&start=2024-01-01&end=2024-03-01`
 	- Returns array of OHLCV with ISO date strings; cleans NaN/inf rows.
 	- Will try providers in order (`PROVIDERS`). Response may include `provider` (e.g., `"yahoo"` or `"stooq"`). On failure, returns `{ ticker, data: [], error }`.
+- GET `/suggest?q=AAPL&limit=12`
+	- Returns up to `limit` ticker suggestions using Yahoo Finance search with a Stooq fallback.
+	- Covers equities, ETFs, commodities, FX/interest-rate indices, and cryptocurrencies so tickers like `GC=F`, `^TNX`, or `BTC-USD` appear alongside stocks.
+	- Response items include `symbol`, `name`, optional `exchange`, `last`, and `change_percent` (percent change). When the Yahoo symbol differs from the preferred Stooq-style ticker (e.g., `BTC-USD` → `BTC.V`, `GC=F` → `XAUUSD`, `^TNX` → `INRTUS.M`), the payload also sets `alias_of` to the original symbol so the UI can show provenance.
+	- Suggestions are ordered by Yahoo's popularity score (with light type-based nudges) so the most traded symbols surface first.
 
 ## How it works (stats model)
 - Build daily log-returns for both series over the overlapping range.

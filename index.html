@@ -47,6 +47,22 @@
 		.status.error { color: var(--bad); }
 		.grid-1 { display:grid; grid-template-columns: 1fr; gap:16px; }
 		.chart { height:360px; }
+		.autocomplete { position: relative; }
+		.autocomplete input { position: relative; z-index: 2; }
+		.autocomplete-list { position:absolute; top:calc(100% + 4px); left:0; background:#0c1424; border:1px solid #253555; border-radius:10px; box-shadow:0 18px 36px rgba(10,16,30,0.55); max-height:260px; overflow-y:auto; padding:4px 0; z-index:30; min-width:100%; width:clamp(360px, 52vw, 720px); max-width:calc(100vw - 32px); }
+		.autocomplete-list.hidden { display:none; }
+		.autocomplete-item { display:grid; grid-template-columns: minmax(90px, 1fr) minmax(180px, 1.4fr) minmax(120px, auto); gap:8px; align-items:center; padding:8px 12px; cursor:pointer; font-size:13px; transition:background 0.12s ease; }
+		.autocomplete-item:hover, .autocomplete-item.active { background:#1a2440; }
+		.autocomplete-symbol { font-weight:600; color:var(--accent); white-space:nowrap; }
+		.autocomplete-alias { margin-left:6px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.8px; font-weight:500; }
+		.autocomplete-name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#d6e0f5; }
+		.autocomplete-meta { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; font-variant-numeric:tabular-nums; }
+		.autocomplete-exchange { color:var(--muted); font-size:12px; }
+		.autocomplete-price { color:#e6edf7; font-weight:600; }
+		.autocomplete-change { font-weight:600; }
+		.autocomplete-change.positive { color:var(--good); }
+		.autocomplete-change.negative { color:var(--bad); }
+		.autocomplete-empty { padding:8px 12px; color:var(--muted); font-size:13px; }
 	</style>
 </head>
 <body>
@@ -55,15 +71,13 @@
 			<h1>Stock Correlation & Stress App</h1>
 			<div class="subtitle">Compare two tickers, compute correlations and stress impacts, and visualize results.</div>
 			<div class="controls">
-				<div class="control">
+				<div class="control autocomplete">
 					<label for="tickerA">Ticker A</label>
-					<input id="tickerA" list="tickerA-list" value="GOOGL" />
-					<datalist id="tickerA-list"></datalist>
+					<input id="tickerA" value="GOOGL" />
 				</div>
-				<div class="control">
+				<div class="control autocomplete">
 					<label for="tickerB">Ticker B</label>
-					<input id="tickerB" list="tickerB-list" value="AAPL" />
-					<datalist id="tickerB-list"></datalist>
+					<input id="tickerB" value="AAPL" />
 				</div>
 				<div class="control">
 					<label for="start">Start</label>
@@ -188,6 +202,6 @@
 			</div>
 		</div>
 	</main>
-	<script src="main.js?v=20251001" defer></script>
+	<script src="main.js?v=20251003a" defer></script>
 </body>
 </html>
