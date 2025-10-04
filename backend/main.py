@@ -516,16 +516,55 @@ def get_history(ticker: str, start: str, end: str):
 				if "date" in df.columns:
 					# Prefer explicit YYYY-MM-DD parsing when the strings match ISO format to avoid warnings
 					def _parse_dates(col: pd.Series) -> pd.Series:
-						try:
-							obj = col.astype(str)
-							# Check a small sample for ISO date pattern
-							sample = obj.dropna().head(10)
-							is_iso = sample.map(lambda x: len(x)==10 and x[4]=="-" and x[7]=="-" and x[:4].isdigit() and x[5:7].isdigit() and x[8:10].isdigit()).all()
-							if is_iso:
-								return pd.to_datetime(obj, format="%Y-%m-%d", errors="coerce")
-							return pd.to_datetime(obj, errors="coerce")
-						except Exception:
-							return pd.to_datetime(col, errors="coerce")
+						obj = col.astype("string").replace({pd.NA: None, "NaT": None, "nat": None, "nan": None})
+						sample = obj.dropna().head(12)
+				
+						def try_format(fmt: str) -> Optional[pd.Series]:
+							try:
+								parsed = pd.to_datetime(obj, format=fmt, errors="coerce")
+								if sample.empty or parsed.loc[sample.index].notna().all():
+									return parsed
+							except Exception:
+								return None
+							return None
+
+						# Try common formats explicitly to avoid pandas format inference warnings.
+						for fmt, pattern in [
+							("%Y-%m-%d", r"^\d{4}-\d{2}-\d{2}$"),
+							("%Y-%m-%d %H:%M:%S", r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$"),
+							("%Y/%m/%d", r"^\d{4}/\d{2}/\d{2}$"),
+							("%m/%d/%Y", r"^\d{2}/\d{2}/\d{4}$"),
+							("%d/%m/%Y", r"^\d{2}/\d{2}/\d{4}$"),
+						]:
+							if sample.empty:
+								parsed = try_format(fmt)
+								if parsed is not None:
+									return parsed
+							else:
+								if sample.str.fullmatch(pattern).all():
+									parsed = try_format(fmt)
+									if parsed is not None:
+										return parsed
+
+						# Fallback: parse item-by-item to avoid global inference warnings.
+						def parse_scalar(val: Optional[str]):
+							if val is None:
+								return pd.NaT
+							text = val.strip()
+							if not text or text.lower() in {"nat", "nan"}:
+								return pd.NaT
+							for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y"):
+								try:
+									return datetime.strptime(text, fmt)
+								except ValueError:
+									continue
+							try:
+								return pd.Timestamp(text)
+							except Exception:
+								return pd.NaT
+
+						parsed_list = [parse_scalar(v) for v in obj]
+						return pd.Series(parsed_list, index=col.index, dtype="datetime64[ns]")
 					df["date"] = _parse_dates(df["date"])  # type: ignore
 					df = df[(df["date"] >= s) & (df["date"] <= e)]
 				return df
