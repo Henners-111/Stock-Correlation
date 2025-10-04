@@ -361,11 +361,45 @@ $('s-quant').textContent = `— / — / —`;
 $('s-samples').textContent = String(nPaths);
 
 
-// Price series
+// Price series (indexed to 100 at the first overlapping date)
+const computeIndexedSeries = (series) => {
+	const closes = series.map(pt => Number(pt.close));
+	const base = closes.find(val => Number.isFinite(val) && Math.abs(val) > 1e-9);
+	if (!(Number.isFinite(base) && Math.abs(base) > 1e-9)) {
+		console.warn('Unable to normalize series to 100 due to invalid starting value.', { series });
+		return { indexed: closes.slice(), closes, base: undefined };
+	}
+	const indexed = closes.map(val => (val / base) * 100);
+	return { indexed, closes, base };
+};
+const indexedA = computeIndexedSeries(a);
+const indexedB = computeIndexedSeries(b);
 Plotly.newPlot('ts_prices',[
-	{x:a.map(d=>d.date),y:a.map(d=>d.close),name:tickerA,mode:'lines',line:{width:2}},
-	{x:b.map(d=>d.date),y:b.map(d=>d.close),name:tickerB,mode:'lines',line:{width:2}},
-],{title:`Price Series (${tickerA} vs ${tickerB})`,plot_bgcolor:'#0c1424',paper_bgcolor:'#121a2b',font:{color:'#e6edf7'}});
+	{
+		x: a.map(d=>d.date),
+		y: indexedA.indexed,
+		name: tickerA,
+		mode: 'lines',
+		line: {width:2},
+		customdata: indexedA.closes,
+		hovertemplate: `${tickerA}<br>Date: %{x}<br>Indexed Close: %{y:.2f}<br>Actual Close: %{customdata:.2f}<extra></extra>`
+	},
+	{
+		x: b.map(d=>d.date),
+		y: indexedB.indexed,
+		name: tickerB,
+		mode: 'lines',
+		line: {width:2},
+		customdata: indexedB.closes,
+		hovertemplate: `${tickerB}<br>Date: %{x}<br>Indexed Close: %{y:.2f}<br>Actual Close: %{customdata:.2f}<extra></extra>`
+	},
+],{
+	title: `Price Series (${tickerA} vs ${tickerB}) — indexed to 100`,
+	yaxis: { title: 'Indexed price (start = 100)' },
+	plot_bgcolor:'#0c1424',
+	paper_bgcolor:'#121a2b',
+	font:{color:'#e6edf7'}
+});
 // Scatter & OLS
 const xMin=Math.min(...rA), xMax=Math.max(...rA);
 Plotly.newPlot('scatter',[
