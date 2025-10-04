@@ -120,6 +120,79 @@ _SUGGESTION_SYMBOL_REMAPS = {
 	"^TNX": "INRTUS.M",
 }
 
+INTEREST_RATE_SUGGESTIONS: List[dict] = [
+	{
+		"symbol": "INRTUS.M",
+		"name": "U.S.: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["us", "usa", "united states", "interest", "rate", "federal", "fed"],
+		"priority": 420.0,
+	},
+	{
+		"symbol": "INRTEU.M",
+		"name": "Eurozone: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["eu", "eurozone", "europe", "eur", "interest", "rate"],
+		"priority": 410.0,
+	},
+	{
+		"symbol": "INRTUK.M",
+		"name": "U.K.: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["uk", "united kingdom", "gb", "gbp", "boe", "interest", "rate"],
+		"priority": 405.0,
+	},
+	{
+		"symbol": "INRTPL.M",
+		"name": "Poland: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["pl", "poland", "pln", "interest", "rate"],
+		"priority": 380.0,
+	},
+	{
+		"symbol": "INRTHU.M",
+		"name": "Hungary: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["hu", "hungary", "huf", "interest", "rate"],
+		"priority": 375.0,
+	},
+	{
+		"symbol": "INRTIN.M",
+		"name": "India: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["in", "india", "inr", "interest", "rate"],
+		"priority": 390.0,
+	},
+	{
+		"symbol": "INRTCH.M",
+		"name": "Switzerland: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["ch", "switzerland", "chf", "interest", "rate"],
+		"priority": 365.0,
+	},
+	{
+		"symbol": "INRTAU.M",
+		"name": "Australia: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["au", "australia", "aud", "interest", "rate"],
+		"priority": 370.0,
+	},
+	{
+		"symbol": "INRTJP.M",
+		"name": "Japan: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["jp", "japan", "jpy", "interest", "rate"],
+		"priority": 360.0,
+	},
+	{
+		"symbol": "INRTCZ.M",
+		"name": "Czech Republic: Interest Rate",
+		"exchange": "Stooq Macro",
+		"keywords": ["cz", "czech", "czk", "interest", "rate"],
+		"priority": 355.0,
+	},
+]
+
 
 
 def _strip_html(text: str) -> str:
@@ -203,6 +276,26 @@ def _compute_popularity_score(quote: dict, order: int) -> float:
 	score_val += type_bonus.get(qtype, 120.0)
 	score_val -= order * 0.01
 	return score_val
+
+
+def _maybe_add_interest_rate_suggestions(query: str, merged: dict[str, dict]) -> None:
+	q = (query or "").strip().lower()
+	if not q:
+		return
+	for entry in INTEREST_RATE_SUGGESTIONS:
+		symbol = entry.get("symbol")
+		if not symbol or symbol in merged:
+			continue
+		tokens = [symbol.lower(), entry.get("name", "").lower()]
+		tokens.extend(entry.get("keywords", []))
+		code = symbol[4:6].lower() if len(symbol) >= 6 else ""
+		if code:
+			tokens.append(code)
+		if any(q in token for token in tokens if token):
+			item = {k: v for k, v in entry.items() if k not in {"keywords", "priority"}}
+			item["_score"] = entry.get("priority", 320.0)
+			merged[symbol] = item
+	return
 
 
 def _fetch_stooq_html(query: str) -> str:
@@ -378,6 +471,7 @@ def fetch_suggestions(query: str, limit: int) -> List[dict]:
 			entry["symbol"] = sym
 			entry["_score"] = -1.0
 			merged[sym] = entry
+	_maybe_add_interest_rate_suggestions(query, merged)
 	ordered = sorted(merged.values(), key=lambda x: x.get("_score", 0.0), reverse=True)
 	out: List[dict] = []
 	for item in ordered:
