@@ -38,12 +38,12 @@ python3 -m venv .venv
 source .venv/bin/activate  # PowerShell: .\.venv\Scripts\Activate.ps1
 pip install -r backend/requirements.txt
 ```
-	- Run the API (example using uvicorn directly):
+- Run the API (example using uvicorn directly):
 ```bash
 cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-	- For a permanent service, create a systemd unit or Supervisor entry that launches the above command on boot.
+- For a permanent service, create a systemd unit or Supervisor entry that launches the above command on boot.
 
 3. **Expose through Nginx Proxy Manager (NPM) + Cloudflare**
 	- In NPM, create a Proxy Host `api.stock.nethercot.uk` → http://<home-server-ip>:8000. Enable Websockets. Issue a Let’s Encrypt cert, Force SSL, HTTP/2, HSTS.
