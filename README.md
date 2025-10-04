@@ -56,7 +56,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 See `SELF_HOSTING.md` for a fuller walkthrough of the NPM + Cloudflare flow.
 
 ## Configuration (env)
-- `ALLOW_ORIGINS`: comma-separated CORS origins (e.g., `https://stock.nethercot.uk,https://api.stock.nethercot.uk`).
+- `ALLOW_ORIGINS`: comma-separated CORS origins (e.g., `http://localhost:8000 (For Local Use) ,https://stock-correlation.onrender.com`).
 - `HOST`/`PORT`: backend bind host/port (default 0.0.0.0:8000).
 - `PROVIDERS`: comma-separated data providers in order of preference. Default `yahoo,stooq`. If Yahoo Finance blocks your server or rate-limits, set `stooq,yahoo`.
 - `LOG_LEVEL`: Python logging level (e.g., `INFO`, `DEBUG`).
@@ -67,7 +67,7 @@ See `SELF_HOSTING.md` for a fuller walkthrough of the NPM + Cloudflare flow.
 	- Returns array of OHLCV with ISO date strings; cleans NaN/inf rows.
 	- Will try providers in order (`PROVIDERS`). Response may include `provider` (e.g., `"yahoo"` or `"stooq"`). On failure, returns `{ ticker, data: [], error }`.
 - GET `/suggest?q=AAPL&limit=12`
-	- Returns up to `limit` ticker suggestions using Yahoo Finance search with a Stooq fallback.
+	- Returns up to `limit` ticker suggestions using Yahoo Finance search with a Stooq fallback. However, Stooq has different ticker names so it will sometimes produce errors. There is no fix that I am aware of...
 	- Covers equities, ETFs, commodities, FX/interest-rate indices, and cryptocurrencies so tickers like `GC=F`, `^TNX`, or `BTC-USD` appear alongside stocks.
 	- Response items include `symbol`, `name`, optional `exchange`, `last`, and `change_percent` (percent change). When the Yahoo symbol differs from the preferred Stooq-style ticker (e.g., `BTC-USD` → `BTC.V`, `GC=F` → `XAUUSD`, `^TNX` → `INRTUS.M`), the payload also sets `alias_of` to the original symbol so the UI can show provenance.
 	- Suggestions are ordered by Yahoo's popularity score (with light type-based nudges) so the most traded symbols surface first.
