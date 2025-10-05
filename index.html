@@ -72,6 +72,8 @@
 		.autocomplete-change.positive { color:var(--good); }
 		.autocomplete-change.negative { color:var(--bad); }
 		.autocomplete-empty { padding:8px 12px; color:var(--muted); font-size:13px; }
+		.mc-summary { margin:0 0 10px; padding:10px 12px; background:#0c1424; border:1px dashed #253555; border-radius:10px; font-size:13px; color:#dbe6ff; line-height:1.4; }
+		.mc-summary strong { color:var(--accent); }
 	</style>
 </head>
 <body>
@@ -335,6 +337,7 @@
 				</div>
 				<div class="grid-1">
 					<div id="mc" class="chart"></div>
+					<div id="mc-summary" class="mc-summary">Run a simulation to see the cumulative shock impact.</div>
 					<div class="stats stats-compact">
 						<div class="stat">
 							<div class="label label-with-help">
@@ -373,6 +376,6 @@
 			</div>
 		</div>
 	</main>
-	<script src="main.js?v=20251003a" defer></script>
+	<script src="main.js?v=20251005b" defer></script>
 </body>
 </html>

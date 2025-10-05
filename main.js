@@ -8,14 +8,22 @@ function setStatus(msg) {
 }
 
 // Resolve API base dynamically to ensure the frontend reaches a live backend in prod
-// Priority: URL ?api= override → Render → custom domain → localhost (only on localhost)
+// Priority: URL ?api= override → local dev → hosted endpoints → local fallback
 const urlApiOverride = new URLSearchParams(location.search).get('api');
-const isLocalHost = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+const isLocalHost = ['localhost', '127.0.0.1'].includes(location.hostname);
+if (isLocalHost) {
+	const cachedBase = sessionStorage.getItem('API_BASE');
+	if (cachedBase && !/^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?$/.test(cachedBase)) {
+		sessionStorage.removeItem('API_BASE');
+	}
+}
 const candidates = [];
+const localPreferences = ['http://127.0.0.1:8000', 'http://localhost:8000'];
 if (urlApiOverride) candidates.push(urlApiOverride);
+if (isLocalHost) candidates.push(...localPreferences);
 candidates.push('https://stock-correlation.onrender.com');
 candidates.push('https://api.stock.nethercot.uk');
-if (isLocalHost) candidates.push('http://127.0.0.1:8000');
+if (!isLocalHost) candidates.push(...localPreferences);
 
 let RESOLVED_API_BASE = sessionStorage.getItem('API_BASE') || '';
 const suggestionCache = new Map();
@@ -228,6 +236,42 @@ function gaussian(){
 	let u=0,v=0; while(u===0) u=Math.random(); while(v===0) v=Math.random();
 	return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
 }
+function mulberry32(seed){
+	let t = seed >>> 0;
+	return function(){
+		t = (t + 0x6D2B79F5) | 0;
+		let r = Math.imul(t ^ t >>> 15, 1 | t);
+		r ^= r + Math.imul(r ^ r >>> 7, 61 | r);
+		return ((r ^ r >>> 14) >>> 0) / 4294967296;
+	};
+}
+function createGaussianGenerator(seed){
+	const uniform = mulberry32(seed || 0x1d872b41);
+	let spare = null;
+	return function(){
+		if(spare != null){
+			const val = spare;
+			spare = null;
+			return val;
+		}
+		let u = 0, v = 0;
+		while(u === 0) u = uniform();
+		while(v === 0) v = uniform();
+		const mag = Math.sqrt(-2 * Math.log(u));
+		const theta = 2 * Math.PI * v;
+		spare = mag * Math.sin(theta);
+		return mag * Math.cos(theta);
+	};
+}
+function hashSeed(parts){
+	const str = Array.isArray(parts) ? parts.join('|') : String(parts ?? '');
+	let h = 2166136261 >>> 0; // FNV-1a
+	for(let i=0;i<str.length;i++){
+		h ^= str.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return h >>> 0;
+}
 function multivariateNormalSamples(mu,Cov,n){
 	const L=cholesky2(Cov);
 	const out=[];
@@ -326,7 +370,7 @@ const shockStep = Math.max(1, Math.floor(steps/4)); // quarter into the horizon 
 const kappa = (varA_ > 1e-12) ? (covAB_ / varA_) : 0;
 const postShockVolScale = 1.2; // widen uncertainty after shock
 
-function simulateBPathsGBM(S0, muA, muB, sA, sB, corr, n, m, shockIdx, shockRet){
+function simulateBPathsGBM(S0, muA, muB, sA, sB, corr, n, m, shockIdx, shockRet, gaussianFn = gaussian){
 	const dt = 1.0; // daily log-return step
 	const paths = new Array(m);
 	for(let j=0;j<m;j++){
@@ -335,8 +379,8 @@ function simulateBPathsGBM(S0, muA, muB, sA, sB, corr, n, m, shockIdx, shockRet)
 		let volScale = 1.0;
 		for(let t=1;t<=n;t++){
 			// Correlated normals via Cholesky
-			const z0 = gaussian();
-			const z1 = gaussian();
+			const z0 = gaussianFn();
+			const z1 = gaussianFn();
 			const eA = z0;
 			const eB = corr*z0 + Math.sqrt(1-corr*corr)*z1;
 			let rAstep = muA*dt + sA*Math.sqrt(dt)*eA;
@@ -353,12 +397,55 @@ function simulateBPathsGBM(S0, muA, muB, sA, sB, corr, n, m, shockIdx, shockRet)
 	return paths;
 }
 
-const pathsB = simulateBPathsGBM(S0B, muA, muB, sigA, sigB, rho, steps, nPaths, shockStep, shock);
-// Expected B shift under shock (one-step conditional mean shift)
-expectedB = muB + kappa * shock;
-$('s-expB').textContent = isFinite(expectedB) ? expectedB.toExponential(2) : 'NA';
-$('s-quant').textContent = `— / — / —`;
+const rngSeed = hashSeed([
+	tickerA,
+	tickerB,
+	start,
+	end,
+	Number.isFinite(shock) ? shock.toFixed(6) : 'NaN',
+	windowSize,
+	steps,
+	nPaths,
+	Number.isFinite(rho) ? rho.toFixed(6) : 'NaN'
+]);
+const gaussianSeeded = createGaussianGenerator(rngSeed);
+const pathsB = simulateBPathsGBM(S0B, muA, muB, sigA, sigB, rho, steps, nPaths, shockStep, shock, gaussianSeeded);
+const quantile = (values, p) => {
+	if (!values.length) return NaN;
+	const sorted = [...values].sort((a,b)=>a-b);
+	const pos = (sorted.length - 1) * p;
+	const base = Math.floor(pos);
+	const rest = pos - base;
+	if (base + 1 < sorted.length) return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+	return sorted[base];
+};
+const columnQuantile = (matrix, idx, p) => {
+	const col = new Array(matrix.length);
+	for (let i = 0; i < matrix.length; i++) col[i] = matrix[i][idx];
+	return quantile(col, p);
+};
+const centralPath = Array.from({ length: steps + 1 }, (_, idx) => columnQuantile(pathsB, idx, 0.5));
+const stepPct = centralPath.map((val, idx) => {
+	if (idx === 0) return 0;
+	const prev = centralPath[idx - 1];
+	return prev ? ((val / prev) - 1) * 100 : 0;
+});
+const cumulativePct = centralPath.map(val => ((val / centralPath[0]) - 1) * 100);
+const totalShockPct = cumulativePct[cumulativePct.length - 1] ?? NaN;
+expectedB = totalShockPct;
+$('s-expB').textContent = Number.isFinite(expectedB) ? formatChangePct(expectedB) : 'NA';
+const finalPct = pathsB.map(series => ((series[series.length - 1] / series[0]) - 1) * 100);
+const q5 = quantile(finalPct, 0.05);
+const q50 = quantile(finalPct, 0.5);
+const q95 = quantile(finalPct, 0.95);
+const qLabel = (val) => Number.isFinite(val) ? formatChangePct(val) : '—';
+$('s-quant').textContent = `${qLabel(q5)} / ${qLabel(q50)} / ${qLabel(q95)}`;
 $('s-samples').textContent = String(nPaths);
+const mcSummary = $('mc-summary');
+if (mcSummary) {
+	const totalLabel = Number.isFinite(totalShockPct) ? formatChangePct(totalShockPct) : 'NA';
+	mcSummary.innerHTML = `Total change over <strong>${steps}</strong> days: <strong>${escapeHtml(totalLabel)}</strong><br>Shock applied on day <strong>${shockStep}</strong>.<br>Red line shows the Monte Carlo median across ${nPaths} paths.`;
+}
 
 
 // Price series (indexed to 100 at the first overlapping date)
@@ -411,15 +498,33 @@ const roll=[]; const w=windowSize; for(let i=0;i<=rA.length-w;i++){ roll.push(pe
 Plotly.newPlot('rolling',[{x:RA.dates.slice(w-1),y:roll,mode:'lines',line:{color:'#4f83ff'}}],{title:`Rolling ${w}-day correlation`,yaxis:{range:[-1,1]},plot_bgcolor:'#0c1424',paper_bgcolor:'#121a2b',font:{color:'#e6edf7'}});
 // Monte Carlo Paths chart (smooth, time-based)
 const xIdx = Array.from({length:steps+1}, (_,i)=>i);
-const traces = pathsB.map(series=>({ x: xIdx, y: series, mode: 'lines', line: {color:'#4f83ff', width:1}, opacity:0.25, showlegend:false }));
-// Add a single red path with shock (fresh simulation to highlight)
-const redPath = simulateBPathsGBM(S0B, muA, muB, sigA, sigB, rho, steps, 1, shockStep, shock)[0];
-traces.push({ x:xIdx, y:redPath, mode:'lines', name:'Shocked path', line:{color:'#ff5252', width:2}, opacity:0.95, showlegend:true });
+const traces = pathsB.map(series => ({
+	x: xIdx,
+	y: series,
+	mode: 'lines',
+	line: { color: '#4f83ff', width: 1 },
+	opacity: 0.22,
+	showlegend: false,
+	hoverinfo: 'skip'
+}));
+const centralCustomData = centralPath.map((_, idx) => [stepPct[idx] || 0, cumulativePct[idx] || 0]);
+traces.push({
+	x: xIdx,
+	y: centralPath,
+	mode: 'lines',
+	name: 'Median shocked path',
+	line: { color: '#ff5252', width: 2 },
+	opacity: 0.98,
+	showlegend: true,
+	customdata: centralCustomData,
+	hovertemplate: 'Day %{x}<br>Step change: %{customdata[0]:.2f}%<br>Total change: %{customdata[1]:.2f}%<extra></extra>'
+});
 Plotly.newPlot('mc', traces, {
 	title: `Monte Carlo ${tickerB} price paths (shock to ${tickerA} at t=${shockStep})`,
 	xaxis: { title: 'Time (days)', range: [0, steps] },
 	yaxis: { title: `${tickerB} Price` },
-	plot_bgcolor:'#0c1424', paper_bgcolor:'#121a2b', font:{color:'#e6edf7'}
+	plot_bgcolor:'#0c1424', paper_bgcolor:'#121a2b', font:{color:'#e6edf7'},
+	hovermode: 'x unified'
 });
 
 

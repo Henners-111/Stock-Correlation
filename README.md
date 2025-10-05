@@ -22,6 +22,8 @@ python -m http.server 8080  # http://127.0.0.1:8080
 ```
 Open http://127.0.0.1:8080 and click Run. In dev, the frontend calls http://127.0.0.1:8000.
 
+> **Tip:** The UI auto-detects localhost backends now, but if you previously connected to the hosted API you may need to hard-refresh (Ctrl+F5) or append `?api=http://127.0.0.1:8000` the first time to override the cached base URL.
+
 ## Deploy via GitHub Pages + home backend
 1. **Frontend (static)**
 	- Push the repository to GitHub.
