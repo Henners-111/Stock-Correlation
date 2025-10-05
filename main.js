@@ -11,19 +11,23 @@ function setStatus(msg) {
 // Priority: URL ?api= override → local dev → hosted endpoints → local fallback
 const urlApiOverride = new URLSearchParams(location.search).get('api');
 const isLocalHost = ['localhost', '127.0.0.1'].includes(location.hostname);
-if (isLocalHost) {
+const localApiPattern = /^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?$/;
+{
 	const cachedBase = sessionStorage.getItem('API_BASE');
-	if (cachedBase && !/^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?$/.test(cachedBase)) {
-		sessionStorage.removeItem('API_BASE');
+	if (cachedBase) {
+		if (isLocalHost && !localApiPattern.test(cachedBase)) {
+			sessionStorage.removeItem('API_BASE');
+		} else if (!isLocalHost && localApiPattern.test(cachedBase)) {
+			sessionStorage.removeItem('API_BASE');
+		}
 	}
 }
 const candidates = [];
 const localPreferences = ['http://127.0.0.1:8000', 'http://localhost:8000'];
 if (urlApiOverride) candidates.push(urlApiOverride);
 if (isLocalHost) candidates.push(...localPreferences);
-candidates.push('https://stock-correlation.onrender.com');
 candidates.push('https://api.stock.nethercot.uk');
-if (!isLocalHost) candidates.push(...localPreferences);
+candidates.push('https://stock-correlation.onrender.com');
 
 let RESOLVED_API_BASE = sessionStorage.getItem('API_BASE') || '';
 const suggestionCache = new Map();
