@@ -24,10 +24,12 @@ const localApiPattern = /^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?$/;
 }
 const candidates = [];
 const localPreferences = ['http://127.0.0.1:8000', 'http://localhost:8000'];
+const hostedPreferences = [
+	'https://stock-correlation.onrender.com',
+];
 if (urlApiOverride) candidates.push(urlApiOverride);
 if (isLocalHost) candidates.push(...localPreferences);
-candidates.push('https://api.stock.nethercot.uk');
-candidates.push('https://stock-correlation.onrender.com');
+candidates.push(...hostedPreferences);
 
 let RESOLVED_API_BASE = sessionStorage.getItem('API_BASE') || '';
 const suggestionCache = new Map();
